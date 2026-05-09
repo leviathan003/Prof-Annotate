@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+.venv
+release/
+.bytemark/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.pytest_cache/
+.coverage
+models/*.onnx
+*.txt
