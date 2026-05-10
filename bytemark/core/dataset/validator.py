@@ -98,9 +98,9 @@ def reshuffle_into_yolo_format(
 
         for img in split_images:
             shutil.copy2(img, img_out / img.name)
-            lbl = img.with_suffix(YOLO_LABEL_EXT)
-            if not lbl.exists():
-                lbl = _find_label_sibling(img, source)
+            lbl = _find_label_sibling(img, source)
+            if lbl is None or not lbl.exists():
+                lbl = img.with_suffix(YOLO_LABEL_EXT)
             if lbl and lbl.exists():
                 shutil.copy2(lbl, lbl_out / lbl.name)
 

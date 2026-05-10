@@ -500,6 +500,24 @@ class MainWindow(QMainWindow):
         self._load_entry_by_index(0)
 
     def _open_dataset(self, root: Path) -> None:  # noqa: C901
+        subdirs = [p.name for p in root.iterdir() if p.is_dir()]
+        unexpected = [d for d in subdirs if d not in ("images", "labels")]
+        if unexpected:
+            ErrorDialog(
+                "Invalid directory structure.\n\n"
+                f"Unexpected folder(s) found:\n{', '.join(sorted(unexpected))}\n\n"
+                "Root must only contain:\n\n"
+                "  root/\n"
+                "  ├── images/\n"
+                "  │     ├── train/\n"
+                "  │     └── val/\n"
+                "  └── labels/\n"
+                "        ├── train/\n"
+                "        └── val/",
+                self,
+            ).exec()
+            return
+
         from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
 
         diag = diagnose_dataset(root)

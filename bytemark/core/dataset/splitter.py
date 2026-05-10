@@ -28,11 +28,6 @@ def split_dataset(
     train_ratio: float = 0.8,
     seed: int = 42,
 ) -> dict[str, int]:
-    """
-    Copy images (and labels if present) from `source` into
-    `dest/images/train`, `dest/images/val`, etc.
-    Returns {"train": n, "val": m}.
-    """
     source = Path(source).resolve()
     dest = Path(dest).resolve()
 
@@ -60,11 +55,31 @@ def split_dataset(
 
         for img in split_images:
             shutil.copy2(img, img_out / img.name)
-            lbl = img.with_suffix(YOLO_LABEL_EXT)
-            if lbl.exists():
-                shutil.copy2(lbl, lbl_out / lbl.name)
+            # Check proper YOLO structure first, fall back to same-dir
+            lbl = _find_label_sibling(img, source)
+            if lbl is None or not lbl.exists():
+                lbl = img.with_suffix(YOLO_LABEL_EXT)
+            if lbl and lbl.exists():
+                shutil.copy2(lbl, lbl_out / (img.stem + YOLO_LABEL_EXT))
 
         counts[split_name] = len(split_images)
         logger.info("Split %s: %d images", split_name, len(split_images))
 
     return counts
+
+
+def _find_label_sibling(img: Path, source: Path):
+    """Resolve label path for a structured YOLO dataset (images/ → labels/)."""
+    try:
+        parts = list(img.relative_to(source).parts)
+        for i, p in enumerate(parts):
+            if p.lower() == "images":
+                parts[i] = "labels"
+                break
+        else:
+            return None
+        from bytemark.config.constants import YOLO_LABEL_EXT
+
+        return (source / Path(*parts)).with_suffix(YOLO_LABEL_EXT)
+    except Exception:
+        return None

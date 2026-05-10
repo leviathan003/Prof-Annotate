@@ -1,26 +1,35 @@
 """
 bytemark/ui/overlays/bbox_overlay.py
-QGraphicsItem for rendering a bounding box annotation on the canvas.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPainter, QPen
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsRectItem, QStyleOptionGraphicsItem, QWidget
+from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from bytemark.core.annotation.models import BBox
-from bytemark.utils.color import bbox_color, class_color
+from bytemark.utils.color import class_color
+
+# Handle constants — imported by canvas.py
+HANDLE_NONE = -1
+HANDLE_MOVE = 0
+HANDLE_TL = 1
+HANDLE_TC = 2
+HANDLE_TR = 3
+HANDLE_ML = 4
+HANDLE_MR = 5
+HANDLE_BL = 6
+HANDLE_BC = 7
+HANDLE_BR = 8
+
+_HANDLE_R = 4.5  # visual radius (scene px)
+_HIT_R = 8.0  # hit-test radius
 
 
 class BBoxOverlay(QGraphicsItem):
     def __init__(
-        self,
-        bbox: BBox,
-        img_w: int,
-        img_h: int,
-        class_id: int = 0,
-        instance_idx: int = 0,
+        self, bbox: BBox, img_w: int, img_h: int, class_id: int = 0, instance_idx: int = 0
     ) -> None:
         super().__init__()
         self._bbox = bbox
@@ -29,29 +38,42 @@ class BBoxOverlay(QGraphicsItem):
         self._class_id = class_id
         self._idx = instance_idx
         self._selected = False
-
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
+        self._update_rect()
 
-        x1, y1, x2, y2 = bbox.to_xyxy(img_w, img_h)
+    def _update_rect(self) -> None:
+        x1, y1, x2, y2 = self._bbox.to_xyxy(self._img_w, self._img_h)
         self._rect = QRectF(x1, y1, x2 - x1, y2 - y1)
 
+    def _handle_positions(self) -> list[tuple[float, float]]:
+        r = self._rect
+        cx = r.x() + r.width() / 2
+        cy = r.y() + r.height() / 2
+        return [
+            (r.x(), r.y()),  # TL 1
+            (cx, r.y()),  # TC 2
+            (r.x() + r.width(), r.y()),  # TR 3
+            (r.x(), cy),  # ML 4
+            (r.x() + r.width(), cy),  # MR 5
+            (r.x(), r.y() + r.height()),  # BL 6
+            (cx, r.y() + r.height()),  # BC 7
+            (r.x() + r.width(), r.y() + r.height()),  # BR 8
+        ]
+
     def boundingRect(self) -> QRectF:
-        return self._rect.adjusted(-2, -2, 2, 2)
+        m = _HANDLE_R + 3
+        return self._rect.adjusted(-m, -m, m, m)
 
     def paint(
         self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None
     ) -> None:
         color = class_color(self._class_id)
-        pen = QPen(color, 1.5, Qt.PenStyle.SolidLine)
-        if self._selected:
-            pen.setWidth(2.5)
-            pen.setColor(QColor("#FFFFFF"))
-        painter.setPen(pen)
+        pw = 2.0 if self._selected else 1.5
+        painter.setPen(QPen(color, pw))
         painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         painter.drawRect(self._rect)
 
-        # Class label
         painter.setPen(QPen(color))
         painter.drawText(
             QRectF(self._rect.x(), self._rect.y() - 14, self._rect.width(), 14),
@@ -59,11 +81,48 @@ class BBoxOverlay(QGraphicsItem):
             f"cls:{self._class_id}",
         )
 
+        if self._selected:
+            h_ids = [
+                HANDLE_TL,
+                HANDLE_TC,
+                HANDLE_TR,
+                HANDLE_ML,
+                HANDLE_MR,
+                HANDLE_BL,
+                HANDLE_BC,
+                HANDLE_BR,
+            ]
+            for _, (hx, hy) in zip(h_ids, self._handle_positions()):
+                painter.setPen(QPen(QColor("#000000"), 0.8))
+                painter.setBrush(QBrush(QColor("#FFFFFF")))
+                painter.drawEllipse(QPointF(hx, hy), _HANDLE_R, _HANDLE_R)
+
+    def hit_test_handle(self, scene_pos: QPointF) -> int:
+        """Returns a HANDLE_* constant. Only checks resize handles when selected."""
+        if self._selected:
+            h_ids = [
+                HANDLE_TL,
+                HANDLE_TC,
+                HANDLE_TR,
+                HANDLE_ML,
+                HANDLE_MR,
+                HANDLE_BL,
+                HANDLE_BC,
+                HANDLE_BR,
+            ]
+            for hid, (hx, hy) in zip(h_ids, self._handle_positions()):
+                dx = scene_pos.x() - hx
+                dy = scene_pos.y() - hy
+                if (dx * dx + dy * dy) ** 0.5 <= _HIT_R:
+                    return hid
+        if self._rect.contains(scene_pos):
+            return HANDLE_MOVE
+        return HANDLE_NONE
+
     def update_bbox(self, bbox: BBox) -> None:
         self.prepareGeometryChange()
         self._bbox = bbox
-        x1, y1, x2, y2 = bbox.to_xyxy(self._img_w, self._img_h)
-        self._rect = QRectF(x1, y1, x2 - x1, y2 - y1)
+        self._update_rect()
         self.update()
 
     def set_selected(self, selected: bool) -> None:
