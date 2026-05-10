@@ -13,6 +13,7 @@ from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -35,10 +36,20 @@ from bytemark.config.constants import (
     SPLITTER_CANVAS_STRETCH,
     SPLITTER_JSON_STRETCH,
     SPLITTER_SIDEBAR_STRETCH,
+    YOLO_TRAIN_DIR,
 )
 from bytemark.core.annotation.models import ImageAnnotations, Modality
 from bytemark.core.dataset.loader import DatasetIndex, ImageEntry, load_dataset
-from bytemark.core.dataset.validator import validate_dataset
+from bytemark.core.dataset.validator import (
+    SCENARIO_EMPTY,
+    SCENARIO_IMAGES_ONLY_FLAT,
+    SCENARIO_LABELS_ONLY,
+    SCENARIO_OK,
+    SCENARIO_STRUCTURED_ALL_EMPTY,
+    SCENARIO_STRUCTURED_LABELS_EMPTY,
+    SCENARIO_STRUCTURED_ONE_SPLIT,
+    diagnose_dataset,
+)
 from bytemark.core.dataset.yaml_handler import generate_yaml
 from bytemark.core.git.reader import (
     find_repo_root,
@@ -62,8 +73,9 @@ from bytemark.utils.logger import setup_logging
 
 
 class _ReshuffleWorker(QObject):
-    finished = Signal(object)  # Path
+    finished = Signal(object)  # Path — new dataset root
     failed = Signal(str)
+    log_line = Signal(str, str)  # (message, state: active | done | error)
 
     def __init__(self, root: Path, dest: Path) -> None:
         super().__init__()
@@ -72,9 +84,23 @@ class _ReshuffleWorker(QObject):
 
     def run(self) -> None:
         try:
+            from bytemark.config.constants import YOLO_IMAGE_EXTS as _EXTS
             from bytemark.core.dataset.validator import reshuffle_into_yolo_format
 
-            self.finished.emit(reshuffle_into_yolo_format(self._root, self._dest))
+            self.log_line.emit("Scanning source directory for images...", "active")
+            images = [p for p in self._root.rglob("*") if p.is_file() and p.suffix.lower() in _EXTS]
+            self.log_line.emit(
+                f"Found {len(images)} image(s), preparing output structure...", "done"
+            )
+            self.log_line.emit("Shuffling and splitting into train / val...", "active")
+            result = reshuffle_into_yolo_format(self._root, self._dest)
+            self.log_line.emit("Train / val split complete...", "done")
+            self.log_line.emit("Generating data.yaml and finalising...", "active")
+            from bytemark.core.dataset.yaml_handler import generate_yaml
+
+            generate_yaml(result)
+            self.log_line.emit("Dataset ready, loading...", "done")
+            self.finished.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -98,6 +124,173 @@ class _DatasetIndexLoader(QObject):
                 self.finished.emit(load_dataset(self._root))
         except Exception as exc:
             self.failed.emit(str(exc))
+
+
+class _BulkAutoAnnotateWorker(QObject):
+    """Runs inference on every image in a dataset root and writes label files."""
+
+    progress = Signal(str)  # filename currently being processed
+    finished = Signal()
+    failed = Signal(str)
+
+    def __init__(self, root: Path, modalities: set) -> None:
+        super().__init__()
+        self._root = root
+        self._modalities = modalities
+
+    def run(self) -> None:
+        try:
+            self._execute()
+            self.finished.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+    def _execute(self) -> None:
+        from bytemark.config.constants import YOLO_IMAGE_EXTS
+        from bytemark.core.annotation.models import ImageAnnotations
+        from bytemark.core.annotation.writer import write_label_file
+        from bytemark.core.inference.engine import InferenceEngine
+        from bytemark.core.inference.filter import filter_by_modality
+        from bytemark.core.inference.postprocess import postprocess
+        from bytemark.utils.image import derive_label_path, image_dimensions, load_image_rgb
+
+        engine = InferenceEngine()
+        engine.load()
+        for img_path in sorted(self._root.rglob("*")):
+            if img_path.suffix.lower() not in YOLO_IMAGE_EXTS:
+                continue
+            rgb = load_image_rgb(img_path)
+            if rgb is None:
+                continue
+            dims = image_dimensions(img_path)
+            if dims is None:
+                continue
+            w, h = dims
+            raw = engine.run(rgb)
+            anns = postprocess(raw, w, h)
+            filtered = filter_by_modality(anns, self._modalities)
+            lbl_path = derive_label_path(img_path)
+            img_ann = ImageAnnotations(
+                image_path=str(img_path),
+                label_path=str(lbl_path),
+                instances=filtered,
+            )
+            write_label_file(img_ann)
+            self.progress.emit(img_path.name)
+        engine.unload()
+
+
+class _ReshuffleProgressDialog(QDialog):
+    """
+    Terminal-style progress overlay shown while a reshuffle runs in a
+    background thread.  Modal — blocks parent input without freezing the UI.
+    """
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent, Qt.WindowType.FramelessWindowHint)
+        self.setModal(True)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+
+        frame = QFrame()
+        frame.setObjectName("overlay_dialog")
+        frame.setFixedWidth(500)
+        inner = QVBoxLayout(frame)
+        inner.setContentsMargins(32, 28, 32, 28)
+        inner.setSpacing(16)
+
+        title = QLabel("Hold on, Annotator!")
+        title.setObjectName("dialog_title")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        inner.addWidget(title)
+
+        body = QLabel(
+            "Received command to reshuffle dataset...\n"
+            "Proceeding with execution steps — might take a moment, Coffee?"
+        )
+        body.setObjectName("dialog_body")
+        body.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        body.setWordWrap(True)
+        inner.addWidget(body)
+
+        log_frame = QFrame()
+        log_frame.setObjectName("exec_log_frame")
+        self._log_layout = QVBoxLayout(log_frame)
+        self._log_layout.setContentsMargins(12, 8, 12, 8)
+        self._log_layout.setSpacing(3)
+        inner.addWidget(log_frame)
+
+        outer.addWidget(frame, alignment=Qt.AlignmentFlag.AlignCenter)
+
+    def add_log(self, message: str, state: str = "active") -> QLabel:
+        lbl = QLabel(message)
+        lbl.setObjectName("exec_log_line")
+        lbl.setProperty("state", state)
+        lbl.style().unpolish(lbl)
+        lbl.style().polish(lbl)
+        self._log_layout.addWidget(lbl)
+        return lbl
+
+    def update_log(self, lbl: QLabel, state: str) -> None:
+        lbl.setProperty("state", state)
+        lbl.style().unpolish(lbl)
+        lbl.style().polish(lbl)
+
+
+class _BulkAutoAnnotateWorker(QObject):
+    """Runs inference on every image in a dataset root and writes label files."""
+
+    progress = Signal(str)  # filename currently being processed
+    finished = Signal()
+    failed = Signal(str)
+
+    def __init__(self, root: Path, modalities: set) -> None:
+        super().__init__()
+        self._root = root
+        self._modalities = modalities
+
+    def run(self) -> None:
+        try:
+            self._execute()
+            self.finished.emit()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+    def _execute(self) -> None:
+        from bytemark.config.constants import YOLO_IMAGE_EXTS
+        from bytemark.core.annotation.models import ImageAnnotations
+        from bytemark.core.annotation.writer import write_label_file
+        from bytemark.core.inference.engine import InferenceEngine
+        from bytemark.core.inference.filter import filter_by_modality
+        from bytemark.core.inference.postprocess import postprocess
+        from bytemark.utils.image import derive_label_path, image_dimensions, load_image_rgb
+
+        engine = InferenceEngine()
+        engine.load()
+        for img_path in sorted(self._root.rglob("*")):
+            if img_path.suffix.lower() not in YOLO_IMAGE_EXTS:
+                continue
+            rgb = load_image_rgb(img_path)
+            if rgb is None:
+                continue
+            dims = image_dimensions(img_path)
+            if dims is None:
+                continue
+            w, h = dims
+            raw = engine.run(rgb)
+            anns = postprocess(raw, w, h)
+            filtered = filter_by_modality(anns, self._modalities)
+            lbl_path = derive_label_path(img_path)
+            img_ann = ImageAnnotations(
+                image_path=str(img_path),
+                label_path=str(lbl_path),
+                instances=filtered,
+            )
+            write_label_file(img_ann)
+            self.progress.emit(img_path.name)
+        engine.unload()
 
 
 # ── Main window ───────────────────────────────────────────────────────────────
@@ -220,6 +413,10 @@ class MainWindow(QMainWindow):
         self._file_explorer.open_folder_requested.connect(self._on_open_folder)
 
         self._canvas.annotations_changed.connect(self._on_annotations_changed)
+        self._canvas.instance_selected.connect(
+            lambda ann, idx: self._json_editor.show_instance(ann, idx)
+        )
+        self._canvas.instance_deselected.connect(self._json_editor.clear_selection)
         self._canvas.save_requested.connect(self._on_save)
         self._canvas.image_loaded.connect(self._on_image_loaded)
         self._canvas.auto_annotate_triggered.connect(self._on_auto_annotate_single)
@@ -233,6 +430,9 @@ class MainWindow(QMainWindow):
 
         open_sc = QShortcut(QKeySequence("Ctrl+O"), self)
         open_sc.activated.connect(self._on_open_folder)
+
+        file_sc = QShortcut(QKeySequence("Ctrl+F"), self)
+        file_sc.activated.connect(self._on_open_file)
 
         ctrl1 = QShortcut(QKeySequence("Ctrl+1"), self)
         ctrl1.activated.connect(
@@ -263,39 +463,160 @@ class MainWindow(QMainWindow):
             return
         self._open_dataset(Path(folder))
 
-    def _open_dataset(self, root: Path) -> None:
-        result = validate_dataset(root)
+    def _on_open_file(self) -> None:
+        """Open a single image file as a one-entry dataset."""
+        from bytemark.utils.image import derive_label_path
 
-        if not result.is_valid:
-            from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
+        exts = " ".join(f"*{e}" for e in sorted(YOLO_IMAGE_EXTS))
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Single Image", str(Path.home()), f"Images ({exts})"
+        )
+        if not path:
+            return
 
-            issues_text = "\n".join(f"• {i}" for i in result.issues)
+        from bytemark.core.dataset.loader import DatasetIndex, ImageEntry
+
+        img_path = Path(path)
+        lbl_path = derive_label_path(img_path)
+        entry = ImageEntry(
+            image_path=img_path,
+            label_path=lbl_path,
+            split=YOLO_TRAIN_DIR,
+            is_corrupted=False,
+            has_label=lbl_path.exists() and lbl_path.stat().st_size > 0,
+        )
+        index = DatasetIndex(root=img_path.parent)
+        index.entries.append(entry)
+
+        self._dataset_root = img_path.parent
+        self._dataset_index = index
+        self._is_git_repo = False
+        self._git_root = None
+        self._dirty_map = {}
+
+        self._file_explorer.load_index(index)
+        self._stats_panel.set_index(index)
+        self._yaml_editor.load(img_path.parent / "data.yaml")
+        self._load_entry_by_index(0)
+
+    def _open_dataset(self, root: Path) -> None:  # noqa: C901
+        from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
+
+        diag = diagnose_dataset(root)
+
+        # ── Empty folder ──────────────────────────────────────────────────────
+        if diag.scenario == SCENARIO_EMPTY:
+            ErrorDialog(
+                "This folder is empty.\nNo images or annotation files were found.",
+                self,
+            ).exec()
+            return
+
+        # ── Annotations present but no images ─────────────────────────────────
+        if diag.scenario == SCENARIO_LABELS_ONLY:
+            ErrorDialog(
+                "This folder contains annotation files but no images.\n"
+                "Please select the folder that also contains the source images.",
+                self,
+            ).exec()
+            return
+
+        # ── YOLO dirs exist but images subdirs are empty ───────────────────────
+        if diag.scenario == SCENARIO_STRUCTURED_ALL_EMPTY:
+            ErrorDialog(
+                "The dataset directories (images/train, images/val) exist "
+                "but contain no images.\nPlease add images before opening.",
+                self,
+            ).exec()
+            return
+
+        # ── Images present but no YOLO structure ──────────────────────────────
+        if diag.scenario == SCENARIO_IMAGES_ONLY_FLAT:
             dlg = ConfirmDialog(
-                "Non-standard Dataset Format",
-                f"Issues found:\n{issues_text}\n\nRearrange into YOLO format?",
-                "> Yes, rearrange",
+                "No Dataset Structure Found",
+                f"This folder contains {diag.flat_image_count} image(s) but no "
+                "YOLO dataset layout (images/train, images/val).\n\n"
+                "Would you like to create a new dataset from these images?",
+                "> Yes, create dataset",
+                "No, cancel",
+                self,
+            )
+            if dlg.exec() != dlg.DialogCode.Accepted:
+                return
+            output_parent = Path(
+                QFileDialog.getExistingDirectory(self, "Select Output Directory", str(Path.home()))
+            )
+            if not output_parent:
+                return
+            wizard = DatasetWizard([root], output_parent, self)
+            wizard.dataset_ready.connect(lambda p: self._open_dataset(Path(p)))
+            wizard.exec()
+            return
+
+        # ── Only one split has images ──────────────────────────────────────────
+        if diag.scenario == SCENARIO_STRUCTURED_ONE_SPLIT:
+            active = diag.active_split
+            count = diag.train_image_count if active == YOLO_TRAIN_DIR else diag.val_image_count
+            dlg = ConfirmDialog(
+                "Incomplete Train / Val Split",
+                f"Only the '{active}' split contains images ({count} image(s)).\n\n"
+                "Would you like to reshuffle everything into a balanced train/val split?\n"
+                "Choose 'No' to open the existing images as-is.",
+                "> Yes, reshuffle",
                 "No, open as-is",
                 self,
             )
             if dlg.exec() == dlg.DialogCode.Accepted:
                 self._start_reshuffle(root)
             else:
-                self._start_index_load(root, flat=True, gen_yaml=False)
+                if not (root / "data.yaml").exists():
+                    generate_yaml(root)
+                self._start_index_load(root, flat=False, gen_yaml=False)
             return
 
-        if not result.has_yaml:
+        # ── Images exist but zero labels ──────────────────────────────────────
+        if diag.scenario == SCENARIO_STRUCTURED_LABELS_EMPTY:
+            dlg = ConfirmDialog(
+                "No Annotations Found",
+                f"Dataset has {diag.total_structured_images} image(s) across "
+                "train/val but no annotation files.\n\n"
+                "Would you like to auto-annotate all images now?\n"
+                "You can also annotate manually after opening.",
+                "> Yes, auto-annotate",
+                "No, open as-is",
+                self,
+            )
+            if dlg.exec() == dlg.DialogCode.Accepted:
+                self._start_bulk_auto_annotate(root)
+            else:
+                if not (root / "data.yaml").exists():
+                    generate_yaml(root)
+                self._start_index_load(root, flat=False, gen_yaml=False)
+            return
+
+        # ── All OK ────────────────────────────────────────────────────────────
+        if not (root / "data.yaml").exists():
             generate_yaml(root)
         self._start_index_load(root, flat=False, gen_yaml=False)
 
     def _start_reshuffle(self, root: Path) -> None:
-        import tempfile
+        from datetime import datetime
 
-        dest = Path(tempfile.mkdtemp()) / root.name
-        self._set_loading(True, "Rearranging dataset into YOLO format...")
+        dest = root.parent / (root.name + "_reshuffled")
+        if dest.exists():
+            dest = (
+                root.parent / f"{root.name}_reshuffled_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            )
+
+        self._reshuffle_dlg = _ReshuffleProgressDialog(self)
+        self._reshuffle_log_map: dict[str, QLabel] = {}
+        self._reshuffle_dlg.show()
+
         self._bg_thread = QThread()
         self._bg_worker = _ReshuffleWorker(root, dest)
         self._bg_worker.moveToThread(self._bg_thread)
         self._bg_thread.started.connect(self._bg_worker.run)
+        self._bg_worker.log_line.connect(self._on_reshuffle_log, Qt.ConnectionType.QueuedConnection)
         self._bg_worker.finished.connect(
             self._on_reshuffle_done, Qt.ConnectionType.QueuedConnection
         )
@@ -305,9 +626,65 @@ class MainWindow(QMainWindow):
         self._bg_thread.finished.connect(self._bg_thread.deleteLater)
         self._bg_thread.start()
 
+    def _on_reshuffle_log(self, message: str, state: str) -> None:
+        if not hasattr(self, "_reshuffle_dlg") or not hasattr(self, "_reshuffle_log_map"):
+            return
+        if message not in self._reshuffle_log_map:
+            lbl = self._reshuffle_dlg.add_log(message, state)
+            self._reshuffle_log_map[message] = lbl
+        else:
+            self._reshuffle_dlg.update_log(self._reshuffle_log_map[message], state)
+
     def _on_reshuffle_done(self, new_root: Path) -> None:
-        generate_yaml(new_root)
+        if hasattr(self, "_reshuffle_dlg") and self._reshuffle_dlg is not None:
+            self._reshuffle_dlg.accept()
+            self._reshuffle_dlg = None
         self._start_index_load(new_root, flat=False, gen_yaml=False)
+
+    def _start_bulk_auto_annotate(self, root: Path) -> None:
+        from bytemark.ui.dialogs.modality_prompt import ModalityPrompt
+
+        prompt = ModalityPrompt(
+            "Select Modalities to Auto-Annotate",
+            show_warning=True,
+            parent=self,
+        )
+        if prompt.exec() != prompt.DialogCode.Accepted:
+            if not (root / "data.yaml").exists():
+                generate_yaml(root)
+            self._start_index_load(root, flat=False, gen_yaml=False)
+            return
+
+        modalities = prompt.selected_modalities()
+        if not modalities:
+            if not (root / "data.yaml").exists():
+                generate_yaml(root)
+            self._start_index_load(root, flat=False, gen_yaml=False)
+            return
+
+        self._set_loading(True, "Auto-annotating dataset — this may take a while…")
+        self._aa_thread = QThread()
+        self._aa_worker = _BulkAutoAnnotateWorker(root, modalities)
+        self._aa_worker.moveToThread(self._aa_thread)
+        self._aa_thread.started.connect(self._aa_worker.run)
+        self._aa_worker.progress.connect(
+            lambda name: self._status_bar.showMessage(f"⟳  Annotating {name}…"),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._aa_worker.finished.connect(
+            lambda: self._on_bulk_annotate_done(root),
+            Qt.ConnectionType.QueuedConnection,
+        )
+        self._aa_worker.failed.connect(self._on_bg_error, Qt.ConnectionType.QueuedConnection)
+        self._aa_worker.finished.connect(self._aa_thread.quit)
+        self._aa_worker.failed.connect(self._aa_thread.quit)
+        self._aa_thread.finished.connect(self._aa_thread.deleteLater)
+        self._aa_thread.start()
+
+    def _on_bulk_annotate_done(self, root: Path) -> None:
+        self._set_loading(False)
+        generate_yaml(root)
+        self._start_index_load(root, flat=False, gen_yaml=False)
 
     def _start_index_load(self, root: Path, flat: bool, gen_yaml: bool) -> None:
         self._dataset_root = root
@@ -349,6 +726,13 @@ class MainWindow(QMainWindow):
 
     def _on_bg_error(self, msg: str) -> None:
         self._set_loading(False)
+        # Close reshuffle dialog if it is open
+        if hasattr(self, "_reshuffle_dlg") and self._reshuffle_dlg is not None:
+            try:
+                self._reshuffle_dlg.reject()
+            except RuntimeError:
+                pass
+            self._reshuffle_dlg = None
         ErrorDialog(msg, self).exec()
 
     def _set_loading(self, loading: bool, message: str = "") -> None:
@@ -436,7 +820,7 @@ class MainWindow(QMainWindow):
 
     def _on_annotations_changed(self, ann: ImageAnnotations) -> None:
         self._dirty_map[ann.image_path] = ann
-        self._json_editor.set_annotations(ann)
+        self._json_editor.set_annotations(ann)  # no-op if nothing selected
         if self._current_entry:
             self._file_explorer.mark_unsaved(str(self._current_entry.image_path))
         if self._dataset_root:

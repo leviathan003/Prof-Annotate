@@ -21,9 +21,10 @@ from PySide6.QtGui import QBrush, QColor, QFont
 from PySide6.QtWidgets import (
     QFrame,
     QLabel,
-    QPushButton,
+    QStackedWidget,
     QTreeView,
     QVBoxLayout,
+    QWidget,
 )
 
 from bytemark.config.constants import (
@@ -133,7 +134,7 @@ class _FileModel(QAbstractItemModel):
 
 class FileExplorer(QFrame):
     file_selected = Signal(object)  # ImageEntry
-    open_folder_requested = Signal()
+    open_folder_requested = Signal()  # kept for external callers
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -144,38 +145,59 @@ class FileExplorer(QFrame):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
 
-        # Header
+        # ── Header ────────────────────────────────────────────────────────────
         hdr = QLabel("FILE EXPLORER")
         hdr.setObjectName("section_header")
         layout.addWidget(hdr)
 
-        # Root label
-        self._root_label = QLabel("root")
+        # ── Root label ────────────────────────────────────────────────────────
+        self._root_label = QLabel("")
         self._root_label.setObjectName("dimmed")
         self._root_label.setContentsMargins(8, 4, 8, 2)
         layout.addWidget(self._root_label)
 
-        # Tree view
+        # ── Stacked: placeholder hint  ←→  tree ───────────────────────────────
+        self._stack = QStackedWidget()
+
+        # Page 0 — hint shown before any dataset is opened
+        hint_page = QWidget()
+        hint_layout = QVBoxLayout(hint_page)
+        hint_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint_layout.setSpacing(6)
+
+        hint_open = QLabel("Ctrl+O  ·  open dataset")
+        hint_open.setObjectName("dimmed")
+        hint_open.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        hint_file = QLabel("Ctrl+F  ·  open single file")
+        hint_file.setObjectName("dimmed")
+        hint_file.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        hint_layout.addWidget(hint_open)
+        hint_layout.addWidget(hint_file)
+
+        # Page 1 — tree view
         self._tree = QTreeView()
         self._tree.setHeaderHidden(True)
         self._tree.setAnimated(False)
         self._tree.setIndentation(12)
         self._tree.setUniformRowHeights(True)
         self._tree.clicked.connect(self._on_clicked)
-        layout.addWidget(self._tree, stretch=1)
 
-        # Open folder button
-        self._open_btn = QPushButton("Open Folder")
-        self._open_btn.setObjectName("primary_button")
-        self._open_btn.setContentsMargins(8, 4, 8, 4)
-        self._open_btn.clicked.connect(self.open_folder_requested)
-        layout.addWidget(self._open_btn)
+        self._stack.addWidget(hint_page)  # index 0
+        self._stack.addWidget(self._tree)  # index 1
+        self._stack.setCurrentIndex(0)
+
+        layout.addWidget(self._stack, stretch=1)
+
+    # ── Public API ────────────────────────────────────────────────────────────
 
     def load_index(self, index: DatasetIndex) -> None:
         self._root_label.setText(index.root.name)
         self._model = _FileModel(index, self)
         self._tree.setModel(self._model)
         self._tree.expandAll()
+        self._stack.setCurrentIndex(1)
 
     def mark_unsaved(self, image_path: str) -> None:
         if self._model:
@@ -188,7 +210,8 @@ class FileExplorer(QFrame):
     def clear(self) -> None:
         self._model = None
         self._tree.setModel(None)
-        self._root_label.setText("root")
+        self._root_label.setText("")
+        self._stack.setCurrentIndex(0)
 
     def _on_clicked(self, index: QModelIndex) -> None:
         if self._model is None:

@@ -72,7 +72,7 @@ def load_flat_dataset(root: Path) -> DatasetIndex:
     for img_path in sorted(root.rglob("*")):
         if img_path.suffix.lower() not in YOLO_IMAGE_EXTS or not img_path.is_file():
             continue
-        lbl_path = img_path.with_suffix(YOLO_LABEL_EXT)
+        lbl_path = derive_label_path(img_path)
         entry = ImageEntry(
             image_path=img_path,
             label_path=lbl_path,

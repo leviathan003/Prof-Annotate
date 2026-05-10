@@ -1,7 +1,6 @@
 """
 bytemark/ui/drawing/segmentation_tool.py
-Segmentation polygon drawing tool. Activated with 'S'.
-Click to add points. Click first point (or any existing point) to close.
+Single click = add point. Double click = close polygon.
 """
 
 from __future__ import annotations
@@ -12,7 +11,6 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QPen
 from PySide6.QtWidgets import QGraphicsLineItem, QGraphicsScene
 
-from bytemark.config.constants import POLYGON_CLOSE_RADIUS_PX
 from bytemark.core.annotation.models import SegmentationMask
 from bytemark.utils.color import segmentation_color
 
@@ -31,7 +29,7 @@ class SegmentationTool:
         self._img_h = img_h
         self._on_complete = on_complete
         self._class_id = class_id
-        self._points: list[tuple[float, float]] = []  # pixel coords
+        self._points: list[tuple[float, float]] = []
         self._preview: Optional[QGraphicsLineItem] = None
         self._active = False
 
@@ -57,20 +55,21 @@ class SegmentationTool:
         return True
 
     def mouse_press(self, scene_pos: QPointF) -> bool:
+        """Single click — add a point."""
         if not self._active:
             return False
+        self._points.append((scene_pos.x(), scene_pos.y()))
+        return True
 
-        px, py = scene_pos.x(), scene_pos.y()
-
-        # Check if clicking near first point to close polygon
+    def double_click(self, scene_pos: QPointF) -> bool:
+        """Double click — close the polygon. Pop the duplicate point from the preceding press."""
+        if not self._active:
+            return False
+        # The press event of the double-click already appended a point; remove it
+        if self._points:
+            self._points.pop()
         if len(self._points) >= 3:
-            fx, fy = self._points[0]
-            dist = ((px - fx) ** 2 + (py - fy) ** 2) ** 0.5
-            if dist <= POLYGON_CLOSE_RADIUS_PX:
-                self._close_polygon()
-                return True
-
-        self._points.append((px, py))
+            self._close_polygon()
         return True
 
     def mouse_release(self, scene_pos: QPointF) -> bool:
@@ -85,8 +84,8 @@ class SegmentationTool:
         mask = SegmentationMask(
             points=[(px / self._img_w, py / self._img_h) for px, py in self._points]
         )
-        self._on_complete(mask, self._class_id)
         self._points = []
+        self._on_complete(mask, self._class_id)
 
     def _remove_preview(self) -> None:
         if self._preview is not None:
