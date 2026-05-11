@@ -890,7 +890,6 @@ class AnnotationCanvas(QFrame):
             ny1 = oy1 + tdy
             nx2 = ox2 + tdx
             ny2 = oy2 + tdy
-            # Keep within image bounds without changing size
             if nx1 < 0:
                 shift = -nx1
                 nx1 += shift
@@ -923,39 +922,6 @@ class AnnotationCanvas(QFrame):
             ny2 = min(H, ny2)
 
         inst.bbox = BBox.from_xyxy(nx1, ny1, nx2, ny2, self._img_w, self._img_h)
-
-        old_w = ox2 - ox1
-        old_h = oy2 - oy1
-        new_w = nx2 - nx1
-        new_h = ny2 - ny1
-
-        # Scale keypoints proportionally within the new bbox
-        if self._bbox_kpts_orig and inst.keypoints:
-            for i, kp in enumerate(self._bbox_kpts_orig):
-                if kp is None:
-                    continue
-                kpx = kp.x * W
-                kpy = kp.y * H
-                tx = (kpx - ox1) / old_w if old_w > 1e-6 else 0.5
-                ty = (kpy - oy1) / old_h if old_h > 1e-6 else 0.5
-                inst.keypoints[i] = Keypoint(
-                    max(0.0, min(1.0, (nx1 + tx * new_w) / W)),
-                    max(0.0, min(1.0, (ny1 + ty * new_h) / H)),
-                    kp.visibility,
-                )
-
-        # Scale segmentation points proportionally
-        if self._bbox_seg_orig and inst.mask:
-            for i, (x, y) in enumerate(self._bbox_seg_orig.points):
-                px = x * W
-                py = y * H
-                tx = (px - ox1) / old_w if old_w > 1e-6 else 0.5
-                ty = (py - oy1) / old_h if old_h > 1e-6 else 0.5
-                inst.mask.points[i] = (
-                    max(0.0, min(1.0, (nx1 + tx * new_w) / W)),
-                    max(0.0, min(1.0, (ny1 + ty * new_h) / H)),
-                )
-
         self._refresh_instance_overlays(self._selected_instance)
 
     # ── Nudge / delete ────────────────────────────────────────────────────────
@@ -1044,4 +1010,28 @@ class AnnotationCanvas(QFrame):
                 self._mark_dirty()
                 return True
 
-        return False
+        # No point selected — delete the whole instance
+        from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
+
+        parts = []
+        if inst.has_bbox():
+            parts.append("bounding box")
+        if inst.has_keypoints():
+            parts.append("keypoints")
+        if inst.has_mask():
+            parts.append("segmentation mask")
+        body = "This will permanently delete:\n• " + "\n• ".join(parts)
+        dlg = ConfirmDialog(
+            "Delete Annotation Instance?",
+            body,
+            "> Yes, delete",
+            "No, cancel",
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return False
+        self._undo.push(self._annotations)
+        self._annotations.remove_instance(self._selected_instance)
+        self._deselect()
+        self._rebuild_overlays()
+        self._mark_dirty()
+        return True
