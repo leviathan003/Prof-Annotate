@@ -851,6 +851,10 @@ class MainWindow(QMainWindow):
         if not self._dirty_map and self._dataset_root:
             clear_session(self._dataset_root)
         self._stats_panel.set_index(self._dataset_index)
+        # Force json panel to re-display saved state
+        if self._json_editor._selected_idx is not None:
+            self._json_editor._suppress_update = False
+            self._json_editor.set_annotations(ann)
 
     def _on_json_edited(self, json_text: str) -> None:
         import json as _json
@@ -865,26 +869,28 @@ class MainWindow(QMainWindow):
                 SegmentationMask,
             )
 
-            if self._current_entry is None:
+            if self._current_entry is None or self._canvas._annotations is None:
                 return
-            ann = ImageAnnotations(
-                image_path=str(self._current_entry.image_path),
-                label_path=str(self._current_entry.label_path),
-            )
-            for inst_data in data.get("instances", []):
-                a = Annotation(class_id=inst_data.get("class", 0))
-                if "bbox" in inst_data:
-                    b = inst_data["bbox"]
-                    a.bbox = BBox(b["cx"], b["cy"], b["w"], b["h"])
-                if "keypoints" in inst_data:
-                    a.keypoints = [
-                        Keypoint(k["x"], k["y"], k.get("v", 2)) for k in inst_data["keypoints"]
-                    ]
-                if "mask" in inst_data:
-                    a.mask = SegmentationMask(
-                        points=[tuple(p) for p in inst_data["mask"]["points"]]
-                    )
-                ann.add_instance(a)
+            selected_idx = self._json_editor._selected_idx
+            if selected_idx is None:
+                return
+            ann = self._canvas._annotations
+            if selected_idx >= len(ann.instances):
+                return
+
+            a = Annotation(class_id=data.get("class", 0))
+            if "bbox" in data:
+                b = data["bbox"]
+                a.bbox = BBox(b["cx"], b["cy"], b["w"], b["h"])
+            if "keypoints" in data:
+                a.keypoints = [
+                    Keypoint(k["x"], k["y"], k.get("v", 2)) if k is not None else None
+                    for k in data["keypoints"]
+                ]
+            if "mask" in data:
+                a.mask = SegmentationMask(points=[tuple(p) for p in data["mask"]["points"]])
+
+            ann.instances[selected_idx] = a
             self._canvas.set_annotations(ann)
         except Exception:
             pass

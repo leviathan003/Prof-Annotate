@@ -754,12 +754,12 @@ class AnnotationCanvas(QFrame):
         if self._annotations is None:
             return
 
-        # 1. Resize/move handle on the currently-selected bbox
+        # 1. Resize handles only (NOT move) on the selected bbox
         if self._selected_instance is not None:
             for j, item in enumerate(self._bbox_items):
                 if self._bbox_inst_map[j] == self._selected_instance:
                     handle = item.hit_test_handle(scene_pos)
-                    if handle != HANDLE_NONE:
+                    if handle not in (HANDLE_NONE, HANDLE_MOVE):
                         self._start_bbox_drag(handle, scene_pos)
                         return
                     break
@@ -798,7 +798,16 @@ class AnnotationCanvas(QFrame):
                 self.instance_selected.emit(self._annotations, inst_idx)
                 return
 
-        # 4. Bbox body → select only (drag on next press after selection)
+        # 4. HANDLE_MOVE on selected bbox (body drag)
+        if self._selected_instance is not None:
+            for j, item in enumerate(self._bbox_items):
+                if self._bbox_inst_map[j] == self._selected_instance:
+                    if item.hit_test_handle(scene_pos) == HANDLE_MOVE:
+                        self._start_bbox_drag(HANDLE_MOVE, scene_pos)
+                        return
+                    break
+
+        # 5. Bbox body → select only
         for j, item in enumerate(self._bbox_items):
             if not item.isVisible():
                 continue
