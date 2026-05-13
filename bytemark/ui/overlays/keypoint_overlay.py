@@ -46,46 +46,48 @@ class KeypointOverlay(QGraphicsItem):
     def boundingRect(self) -> QRectF:
         return self._bounds
 
-    def paint(
-        self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None
-    ) -> None:
+    def paint(self, painter, option, widget=None):
         base_kp = keypoint_color()
         base_sk = skeleton_color(220)
 
-        # Skeleton
         for a, b in SKELETON_CONNECTIONS:
             if a >= len(self._keypoints) or b >= len(self._keypoints):
                 continue
             ka, kb = self._keypoints[a], self._keypoints[b]
-            if ka is None or kb is None:
+            if ka is None or kb is None or (ka.x == 0 and ka.y == 0) or (kb.x == 0 and kb.y == 0):
                 continue
-            alpha = 90 if (ka.visibility == 0 or kb.visibility == 0) else 220
+            alpha = 220 if ka.visibility == 2 and kb.visibility == 2 else 150
             c = QColor(base_sk)
             c.setAlpha(alpha)
-            painter.setPen(QPen(c, 1.0))
+            pen = QPen(c, 1.0)
+            pen.setCosmetic(True)
+            painter.setPen(pen)
             painter.drawLine(
                 QPointF(ka.x * self._img_w, ka.y * self._img_h),
                 QPointF(kb.x * self._img_w, kb.y * self._img_h),
             )
 
-        # Keypoints
+        transform = painter.worldTransform()
         for i, kp in enumerate(self._keypoints):
-            if kp is None:
+            if kp is None or (kp.x == 0 and kp.y == 0):
                 continue
             px, py = kp.x * self._img_w, kp.y * self._img_h
+            screen = transform.map(QPointF(px, py))
             r = _SELECTED_RADIUS if i == self._selected_kpt else _KPT_RADIUS
             c = QColor(base_kp)
-            if kp.visibility == 0:
-                c.setAlpha(110)
-            elif kp.visibility == 1:
+            if kp.visibility == 1:
                 c.setAlpha(180)
-            # v=2 → full alpha
-            painter.setPen(QPen(QColor(0, 0, 0, 160), 0.6))
+            painter.save()
+            painter.resetTransform()
+            op = QPen(QColor(0, 0, 0, 160), 0.8)
+            op.setCosmetic(True)
+            painter.setPen(op)
             painter.setBrush(QBrush(c))
-            painter.drawEllipse(QPointF(px, py), r, r)
+            painter.drawEllipse(screen, r, r)
             if i == self._selected_kpt:
                 painter.setPen(QPen(QColor("#FFFFFF")))
-                painter.drawText(QPointF(px + 5, py - 3), KEYPOINT_NAMES.get(i, str(i)))
+                painter.drawText(screen + QPointF(6, -3), KEYPOINT_NAMES.get(i, str(i)))
+            painter.restore()
 
     def update_keypoints(self, keypoints: list[Keypoint]) -> None:
         self.prepareGeometryChange()
@@ -99,7 +101,7 @@ class KeypointOverlay(QGraphicsItem):
 
     def hit_test_keypoint(self, scene_pos: QPointF) -> int | None:
         for i, kp in enumerate(self._keypoints):
-            if kp is None:
+            if kp is None or (kp.x == 0 and kp.y == 0):
                 continue
             dx = scene_pos.x() - kp.x * self._img_w
             dy = scene_pos.y() - kp.y * self._img_h

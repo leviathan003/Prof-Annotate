@@ -44,46 +44,51 @@ class SegmentationOverlay(QGraphicsItem):
             min(xs) - m, min(ys) - m, max(xs) - min(xs) + m * 2, max(ys) - min(ys) + m * 2
         )
 
-    def paint(
-        self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None
-    ) -> None:
+    def paint(self, painter, option, widget=None):
         if not self._mask.points:
             return
-
         pts_px = [(x * self._img_w, y * self._img_h) for x, y in self._mask.points]
         polygon = QPolygonF([QPointF(x, y) for x, y in pts_px])
         color = segmentation_color()
 
-        # Fill
         if self._mask.is_closed() and not self._is_drawing:
             painter.setBrush(QBrush(segmentation_fill_color()))
             painter.setPen(Qt.PenStyle.NoPen)
             painter.drawPolygon(polygon)
 
-        # Outline — deeper, fully opaque
         outline_color = QColor(color)
         outline_color.setAlpha(230)
+        op = QPen(outline_color, 1.5)
+        op.setCosmetic(True)
         painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
-        painter.setPen(QPen(outline_color, 1.5, Qt.PenStyle.SolidLine))
+        painter.setPen(op)
         if self._mask.is_closed() and not self._is_drawing:
             painter.drawPolygon(polygon)
         else:
             for i in range(len(pts_px) - 1):
                 painter.drawLine(QPointF(*pts_px[i]), QPointF(*pts_px[i + 1]))
 
-        # Control points
+        transform = painter.worldTransform()
         for i, (px, py) in enumerate(pts_px):
+            screen = transform.map(QPointF(px, py))
             r = _SELECTED_RADIUS if i == self._selected_pt else _POINT_RADIUS
             pt_color = QColor(color)
             pt_color.setAlpha(230)
+            painter.save()
+            painter.resetTransform()
             if i == 0 and self._is_drawing:
-                painter.setPen(QPen(Qt.GlobalColor.white, 1.2))
+                wp = QPen(Qt.GlobalColor.white, 1.2)
+                wp.setCosmetic(True)
+                painter.setPen(wp)
                 painter.setBrush(QBrush(pt_color))
-                painter.drawEllipse(QPointF(px, py), r + 1.5, r + 1.5)
+                painter.drawEllipse(screen, r + 1.5, r + 1.5)
             else:
-                painter.setPen(QPen(QColor(0, 0, 0, 160), 0.6))
+                bp = QPen(QColor(0, 0, 0, 160), 0.8)
+                bp.setCosmetic(True)
+                painter.setPen(bp)
                 painter.setBrush(QBrush(pt_color))
-                painter.drawEllipse(QPointF(px, py), r, r)
+                painter.drawEllipse(screen, r, r)
+            painter.restore()
 
     def update_mask(self, mask: SegmentationMask) -> None:
         self.prepareGeometryChange()

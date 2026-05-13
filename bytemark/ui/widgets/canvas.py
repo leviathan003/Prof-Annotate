@@ -78,6 +78,7 @@ class _ImageLoader(QObject):
 class AnnotationCanvas(QFrame):
     annotations_changed = Signal(object)
     save_requested = Signal(object)
+    undo_requested = Signal()
     undo_performed = Signal()
     image_loaded = Signal(str, int, int, bool, bool)
     auto_annotate_triggered = Signal()
@@ -102,34 +103,28 @@ class AnnotationCanvas(QFrame):
             Modality.SEGMENTATION,
         }
 
-        # Selection
         self._selected_instance: Optional[int] = None
         self._selected_kpt_idx: Optional[int] = None
         self._selected_pt_idx: Optional[int] = None
 
-        # Generic drag
         self._dragging = False
-        self._drag_type: Optional[str] = None  # 'kpt'|'seg'|'bbox'
+        self._drag_type: Optional[str] = None
         self._drag_undo_pushed = False
 
-        # Bbox-specific drag state
         self._bbox_drag_handle: int = HANDLE_NONE
         self._bbox_drag_orig: Optional[BBox] = None
         self._bbox_kpts_orig: Optional[list] = None
         self._bbox_seg_orig: Optional[SegmentationMask] = None
         self._bbox_drag_scene_orig: Optional[QPointF] = None
 
-        # Pan
         self._panning = False
         self._pan_origin = None
 
-        # Tools
         self._bbox_tool: Optional[BBoxTool] = None
         self._kpt_tool: Optional[KeypointTool] = None
         self._seg_tool: Optional[SegmentationTool] = None
         self._active_draw_mode: Optional[str] = None
 
-        # Overlay item lists + instance-index maps
         self._bbox_items: list[BBoxOverlay] = []
         self._kpt_items: list[KeypointOverlay] = []
         self._seg_items: list[SegmentationOverlay] = []
@@ -140,7 +135,6 @@ class AnnotationCanvas(QFrame):
         self._diff_item: Optional[DiffOverlay] = None
         self._seg_preview_item: Optional[SegmentationOverlay] = None
 
-        # ── Layout ───────────────────────────────────────────────────────────
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -340,7 +334,6 @@ class AnnotationCanvas(QFrame):
             item.setVisible(show if sel is None else (self._seg_inst_map[j] == sel and show))
 
     def _refresh_instance_overlays(self, inst_idx: int) -> None:
-        """Update overlay items for one instance without full rebuild."""
         if self._annotations is None:
             return
         inst = self._annotations.instances[inst_idx]
@@ -474,7 +467,6 @@ class AnnotationCanvas(QFrame):
     # ── Draw mode ─────────────────────────────────────────────────────────────
 
     def _activate_draw_mode(self, mode: str) -> None:
-        # Enforce bbox-first for kpts and seg
         if mode in ("kpts", "seg"):
             if (
                 self._selected_instance is None
@@ -565,6 +557,27 @@ class AnnotationCanvas(QFrame):
             self._annotations = state
             self._rebuild_overlays()
             self._mark_dirty()
+            # Restore kpt tool index to next unfilled slot
+            if (
+                self._active_draw_mode == "kpts"
+                and self._kpt_tool
+                and self._selected_instance is not None
+                and self._selected_instance < len(self._annotations.instances)
+            ):
+                inst = self._annotations.instances[self._selected_instance]
+                if inst.keypoints:
+                    next_idx = next(
+                        (
+                            i
+                            for i, kp in enumerate(inst.keypoints)
+                            if kp is None or (kp.x == 0 and kp.y == 0)
+                        ),
+                        0,
+                    )
+                    self._kpt_tool._current_idx = next_idx
+        # Always restore seg preview if in seg mode
+        if self._active_draw_mode == "seg":
+            self._create_seg_preview()
 
     # ── Event handling ────────────────────────────────────────────────────────
 
@@ -605,7 +618,17 @@ class AnnotationCanvas(QFrame):
                 self._save()
                 return True
             if key == Qt.Key.Key_Z:
-                self._undo_action()
+                # If seg tool is active and has in-progress points, undo last point only
+                if (
+                    self._active_draw_mode == "seg"
+                    and self._seg_tool
+                    and self._seg_tool.point_count > 0
+                ):
+                    self._seg_tool.undo_last_point()
+                    self._update_seg_preview()
+                    return True
+                # Otherwise bubble up to main window global undo
+                self.undo_requested.emit()
                 return True
             if key == Qt.Key.Key_Y:
                 self.auto_annotate_triggered.emit()
@@ -622,6 +645,7 @@ class AnnotationCanvas(QFrame):
                 self._deactivate_all_tools()
             else:
                 self._deselect()
+            self._view.setFocus()
             return True
 
         if not mods:
@@ -678,20 +702,17 @@ class AnnotationCanvas(QFrame):
 
         if self._active_draw_mode == "bbox" and self._bbox_tool:
             self._bbox_tool.mouse_press(scene_pos)
-
         elif self._active_draw_mode == "kpts" and self._kpt_tool:
             if not self._point_inside_selected_bbox(scene_pos):
                 self._show_warning("Keypoint must lie inside the bounding box.")
                 return
             self._kpt_tool.mouse_press(scene_pos)
-
         elif self._active_draw_mode == "seg" and self._seg_tool:
             if not self._point_inside_selected_bbox(scene_pos):
                 self._show_warning("Segmentation point must lie inside the bounding box.")
                 return
             self._seg_tool.mouse_press(scene_pos)
             self._update_seg_preview()
-
         else:
             self._try_select_and_start_drag(scene_pos)
 
@@ -798,7 +819,7 @@ class AnnotationCanvas(QFrame):
                 self.instance_selected.emit(self._annotations, inst_idx)
                 return
 
-        # 4. HANDLE_MOVE on selected bbox (body drag)
+        # 4. HANDLE_MOVE on selected bbox
         if self._selected_instance is not None:
             for j, item in enumerate(self._bbox_items):
                 if self._bbox_inst_map[j] == self._selected_instance:
@@ -847,7 +868,6 @@ class AnnotationCanvas(QFrame):
                 self._drag_undo_pushed = True
             kp = inst.keypoints[self._selected_kpt_idx]
             vis = kp.visibility if kp is not None else 2
-            # Clamp to bbox
             clamped = self._clamp_to_instance_bbox(scene_pos, self._selected_instance)
             inst.keypoints[self._selected_kpt_idx] = Keypoint.from_pixel(
                 clamped.x(), clamped.y(), self._img_w, self._img_h, vis
@@ -873,7 +893,6 @@ class AnnotationCanvas(QFrame):
             self._drag_move_bbox(scene_pos, inst)
 
     def _clamp_to_instance_bbox(self, scene_pos: QPointF, inst_idx: int) -> QPointF:
-        """Clamp scene_pos to the bbox of inst_idx (if it has one)."""
         if self._annotations is None:
             return scene_pos
         inst = self._annotations.instances[inst_idx]
@@ -958,7 +977,8 @@ class AnnotationCanvas(QFrame):
                 dx = n
             self._undo.push(self._annotations)
             clamped = self._clamp_to_instance_bbox(
-                QPointF(kp.x * self._img_w + dx, kp.y * self._img_h + dy), self._selected_instance
+                QPointF(kp.x * self._img_w + dx, kp.y * self._img_h + dy),
+                self._selected_instance,
             )
             inst.keypoints[self._selected_kpt_idx] = Keypoint.from_pixel(
                 clamped.x(), clamped.y(), self._img_w, self._img_h, kp.visibility
@@ -983,7 +1003,8 @@ class AnnotationCanvas(QFrame):
                 dx = n
             self._undo.push(self._annotations)
             clamped = self._clamp_to_instance_bbox(
-                QPointF((x + dx) * self._img_w, (y + dy) * self._img_h), self._selected_instance
+                QPointF((x + dx) * self._img_w, (y + dy) * self._img_h),
+                self._selected_instance,
             )
             inst.mask.update_point(
                 self._selected_pt_idx,
@@ -1019,7 +1040,6 @@ class AnnotationCanvas(QFrame):
                 self._mark_dirty()
                 return True
 
-        # No point selected — delete the whole instance
         from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
 
         parts = []
@@ -1030,12 +1050,7 @@ class AnnotationCanvas(QFrame):
         if inst.has_mask():
             parts.append("segmentation mask")
         body = "This will permanently delete:\n• " + "\n• ".join(parts)
-        dlg = ConfirmDialog(
-            "Delete Annotation Instance?",
-            body,
-            "> Yes, delete",
-            "No, cancel",
-        )
+        dlg = ConfirmDialog("Delete Annotation Instance?", body, "> Yes, delete", "No, cancel")
         if dlg.exec() != dlg.DialogCode.Accepted:
             return False
         self._undo.push(self._annotations)

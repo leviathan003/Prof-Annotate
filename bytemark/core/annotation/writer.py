@@ -48,7 +48,10 @@ def _serialize(ann: Annotation) -> str:
 
     if ann.has_keypoints() and ann.has_bbox():
         for kp in ann.keypoints:
-            parts += [_f(kp.x), _f(kp.y), str(kp.visibility)]
+            if kp is None:
+                parts += ["0", "0", "0"]
+            else:
+                parts += [_f(kp.x), _f(kp.y), str(kp.visibility)]
 
     if ann.has_mask():
         for x, y in ann.mask.points:

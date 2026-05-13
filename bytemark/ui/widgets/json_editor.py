@@ -93,28 +93,26 @@ class JsonEditor(QFrame):
         self._editor.clear()
         self._suppress_update = False
 
-    def _refresh_display(self) -> None:
+    def _refresh_display(self, force: bool = False) -> None:
         if self._annotations is None or self._selected_idx is None:
             return
         instances = self._annotations.instances
         if self._selected_idx >= len(instances):
             return
-        # Skip only if user is actively typing; programmatic calls set _suppress_update=True to force through
-        if self._editor.hasFocus() and not self._suppress_update:
+        if self._editor.hasFocus() and not force:
             return
         try:
             data = _instance_to_dict(instances[self._selected_idx])
             text = json.dumps(data, indent=2)
             if text == self._editor.toPlainText():
                 return
-            prev = self._suppress_update
             self._suppress_update = True
             pos = self._editor.textCursor().position()
             self._editor.setPlainText(text)
             cursor = self._editor.textCursor()
             cursor.setPosition(min(pos, len(text)))
             self._editor.setTextCursor(cursor)
-            self._suppress_update = prev
+            self._suppress_update = False
         except Exception:
             pass
 

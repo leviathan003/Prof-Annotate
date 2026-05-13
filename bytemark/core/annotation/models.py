@@ -107,7 +107,9 @@ class Annotation:
         return self.bbox is not None
 
     def has_keypoints(self) -> bool:
-        return self.keypoints is not None and len(self.keypoints) > 0
+        if not self.keypoints:
+            return False
+        return any(kp is not None for kp in self.keypoints)
 
     def has_mask(self) -> bool:
         return self.mask is not None and self.mask.is_closed()

@@ -65,16 +65,19 @@ class BBoxOverlay(QGraphicsItem):
         m = _HANDLE_R + 3
         return self._rect.adjusted(-m, -m, m, m)
 
-    def paint(
-        self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None
-    ) -> None:
+    def paint(self, painter, option, widget=None):
+        scale = painter.worldTransform().m11()
         color = class_color(self._class_id)
         pw = 2.0 if self._selected else 1.5
-        painter.setPen(QPen(color, pw))
+        pen = QPen(color, pw)
+        pen.setCosmetic(True)
+        painter.setPen(pen)
         painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         painter.drawRect(self._rect)
 
-        painter.setPen(QPen(color))
+        lbl_pen = QPen(color)
+        lbl_pen.setCosmetic(True)
+        painter.setPen(lbl_pen)
         painter.drawText(
             QRectF(self._rect.x(), self._rect.y() - 14, self._rect.width(), 14),
             Qt.AlignmentFlag.AlignLeft,
@@ -82,6 +85,7 @@ class BBoxOverlay(QGraphicsItem):
         )
 
         if self._selected:
+            transform = painter.worldTransform()
             h_ids = [
                 HANDLE_TL,
                 HANDLE_TC,
@@ -93,9 +97,15 @@ class BBoxOverlay(QGraphicsItem):
                 HANDLE_BR,
             ]
             for _, (hx, hy) in zip(h_ids, self._handle_positions()):
-                painter.setPen(QPen(QColor("#000000"), 0.8))
+                screen = transform.map(QPointF(hx, hy))
+                painter.save()
+                painter.resetTransform()
+                hp = QPen(QColor("#000000"), 0.8)
+                hp.setCosmetic(True)
+                painter.setPen(hp)
                 painter.setBrush(QBrush(QColor("#FFFFFF")))
-                painter.drawEllipse(QPointF(hx, hy), _HANDLE_R, _HANDLE_R)
+                painter.drawEllipse(screen, _HANDLE_R, _HANDLE_R)
+                painter.restore()
 
     def hit_test_handle(self, scene_pos: QPointF) -> int:
         """Returns a HANDLE_* constant. Only checks resize handles when selected."""
