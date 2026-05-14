@@ -156,6 +156,24 @@ class KptBulkEditDialog(QDialog):
         if not indices:
             self._status.setText("Select at least one keypoint.")
             return
+
+        names = ", ".join(KEYPOINT_NAMES.get(i, str(i)) for i in sorted(indices))
+        from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
+
+        dlg = ConfirmDialog(
+            "Permanent Dataset Modification",
+            f"You are about to zero out the following keypoints across ALL label files "
+            f"in this dataset:\n\n{names}\n\n"
+            f"This will overwrite {len(indices)} keypoint(s) with x=0, y=0, v=0 in every "
+            f"annotation file. The operation cannot be undone with Ctrl+Z.\n\n"
+            f"Are you sure you want to proceed?",
+            "> Yes, zero out permanently",
+            "No, cancel",
+            self,
+        )
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+
         self._run_btn.setEnabled(False)
         self._thread = QThread()
         self._worker = _BulkKptWorker(self._root, indices)

@@ -19,13 +19,7 @@ from bytemark.utils.color import keypoint_color
 
 
 class KeypointTool:
-    def __init__(
-        self,
-        scene: QGraphicsScene,
-        img_w: int,
-        img_h: int,
-        on_keypoint_placed: Callable[[int, Keypoint], None],
-    ) -> None:
+    def __init__(self, scene, img_w, img_h, on_keypoint_placed):
         self._scene = scene
         self._img_w = img_w
         self._img_h = img_h
@@ -33,6 +27,7 @@ class KeypointTool:
         self._current_idx = 0
         self._active = False
         self._cursor_item = None
+        self._zoom = 1.0
 
     def activate(self, start_idx: int = 0) -> None:
         self._active = True
@@ -48,17 +43,23 @@ class KeypointTool:
     def current_name(self) -> str:
         return KEYPOINT_NAMES.get(self._current_idx, str(self._current_idx))
 
+    def set_zoom(self, zoom: float) -> None:
+        self._zoom = max(0.01, zoom)
+
     def mouse_move(self, scene_pos: QPointF) -> bool:
         if not self._active:
             return False
         self._remove_cursor()
+        # Keep cursor dot same screen size as drawn keypoints (~3 screen px)
+        r = 3.0 / self._zoom
         color = keypoint_color()
+        pen = QPen(Qt.GlobalColor.white, max(0.5, 0.8 / self._zoom))
         self._cursor_item = self._scene.addEllipse(
-            scene_pos.x() - 4,
-            scene_pos.y() - 4,
-            8,
-            8,
-            QPen(Qt.GlobalColor.white, 1),
+            scene_pos.x() - r,
+            scene_pos.y() - r,
+            r * 2,
+            r * 2,
+            pen,
             QBrush(color),
         )
         return True

@@ -57,8 +57,8 @@ class SegmentationOverlay(QGraphicsItem):
             painter.drawPolygon(polygon)
 
         outline_color = QColor(color)
-        outline_color.setAlpha(230)
-        op = QPen(outline_color, 1.5)
+        outline_color.setAlpha(255 if self._is_drawing else 230)
+        op = QPen(outline_color, 1.5 if not self._is_drawing else 1.0)
         op.setCosmetic(True)
         painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         painter.setPen(op)

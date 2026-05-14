@@ -112,6 +112,37 @@ QPushButton#primary_button:hover { background-color: #0D2214; }
 QPushButton#danger_button { border-color: #FF4444; color: #FF4444; }
 QPushButton#danger_button:hover { background-color: #1A0000; }
 
+QPushButton#create_dataset_btn,
+QPushButton#help_btn,
+QPushButton#kpt_edit_btn {
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid #555555;
+    border-radius: 0px;
+    padding: 4px 8px;
+    color: #CCCCCC;
+}
+
+QPushButton#create_dataset_btn:hover,
+QPushButton#help_btn:hover,
+QPushButton#kpt_edit_btn:hover {
+    border-bottom: 1px solid #00CFFF;
+    color: #FFFFFF;
+}
+
+QPushButton#create_dataset_btn:pressed,
+QPushButton#help_btn:pressed,
+QPushButton#kpt_edit_btn:pressed {
+    border-bottom: 1px solid #0099CC;
+    color: #AAAAAA;
+}
+
+QPushButton#create_dataset_btn:disabled,
+QPushButton#kpt_edit_btn:disabled {
+    border-bottom: 1px solid #333333;
+    color: #555555;
+}
+
 /* ── Inputs ── */
 QLineEdit {
     background-color: #0F0F0F;

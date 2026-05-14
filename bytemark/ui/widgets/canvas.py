@@ -734,6 +734,7 @@ class AnnotationCanvas(QFrame):
             self._bbox_tool.mouse_move(scene_pos)
             return
         if self._active_draw_mode == "kpts" and self._kpt_tool:
+            self._kpt_tool.set_zoom(self._zoom)
             self._kpt_tool.mouse_move(scene_pos)
             return
         if self._active_draw_mode == "seg" and self._seg_tool:

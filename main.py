@@ -36,6 +36,17 @@ def main() -> int:
     app.setApplicationVersion(APP_VERSION)
     app.setAttribute(Qt.ApplicationAttribute.AA_UseHighDpiPixmaps, True)
 
+    base_pt = 11
+    screen = app.primaryScreen()
+    if screen:
+        dpi = screen.logicalDotsPerInch()
+        if dpi >= 192:
+            base_pt = 15
+        elif dpi >= 144:
+            base_pt = 13
+        elif dpi >= 120:
+            base_pt = 12
+
     # Load Ubuntu Sans Mono — variable font + static variants
     ubuntu_mono_dir = FONTS_DIR / "Ubuntu_Sans_Mono"
     font_family = None
