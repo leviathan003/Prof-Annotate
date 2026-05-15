@@ -40,11 +40,12 @@ class _BulkKptWorker(QObject):
 
             lbl_dir = self._root / YOLO_LABELS_SUBDIR
             files = list(lbl_dir.rglob(f"*{YOLO_LABEL_EXT}"))
-            self.log.emit(f"Updating {len(files)} label files...")
+            self.log.emit(f"Processing {len(files)} label file(s)...")
             originals = {}
             for lbl in files:
                 originals[lbl] = lbl.read_text(encoding="utf-8")
                 self._process(lbl)
+
             from bytemark.core.dataset.yaml_handler import load_yaml, save_yaml
 
             yaml_path = self._root / "data.yaml"
@@ -57,27 +58,26 @@ class _BulkKptWorker(QObject):
                 KEYPOINT_NAMES[i] for i in sorted(self._indices) if i in KEYPOINT_NAMES
             ]
             save_yaml(self._root, data)
-            self.log.emit("Done. data.yaml updated.")
+            self.log.emit("Complete. data.yaml has been updated accordingly.")
             self.finished.emit(originals)
         except Exception as exc:
             self.failed.emit(str(exc))
 
     def _process(self, path: Path) -> None:
-        pose_fields = 3 * NUM_KEYPOINTS  # 57
+        pose_fields = 3 * NUM_KEYPOINTS
         lines = path.read_text(encoding="utf-8").splitlines()
         out = []
         for line in lines:
             parts = line.strip().split()
             n = len(parts)
-            # pose: 1+4+57=62, combined: >62 with even remainder
             is_pose = n == 1 + 4 + pose_fields
             is_combined = n > 1 + 4 + pose_fields and (n - 1 - 4 - pose_fields) % 2 == 0
             if is_pose or is_combined:
-                new = list(parts[:5])  # class + bbox
+                new = list(parts[:5])
                 for i in range(NUM_KEYPOINTS):
                     off = 5 + i * 3
                     new += ["0", "0", "0"] if i in self._indices else list(parts[off : off + 3])
-                new += list(parts[5 + pose_fields :])  # seg coords if combined
+                new += list(parts[5 + pose_fields :])
                 out.append(" ".join(new))
             else:
                 out.append(line)
@@ -98,19 +98,23 @@ class KptBulkEditDialog(QDialog):
 
         frame = QFrame()
         frame.setObjectName("overlay_dialog")
-        frame.setFixedWidth(520)
+        frame.setFixedWidth(540)
         inner = QVBoxLayout(frame)
         inner.setContentsMargins(28, 24, 28, 24)
         inner.setSpacing(12)
 
-        t = QLabel("Bulk Keypoint Editor")
+        t = QLabel("Bulk Keypoint Zeroing")
         t.setObjectName("dialog_title")
         t.setAlignment(Qt.AlignmentFlag.AlignCenter)
         inner.addWidget(t)
 
         b = QLabel(
-            "Select keypoints to zero out across ALL label files.\n"
-            "This sets their x/y/visibility to 0 — data.yaml is updated automatically."
+            "Select the keypoints to zero out across all label files in this dataset, "
+            "Annotator.\n\n"
+            "Their x, y, and visibility will be set to 0 throughout. "
+            "The data.yaml will be updated to reflect the change.\n\n"
+            "This cannot be undone with Ctrl+Z "
+            "once the deletions are done, the originals are gone."
         )
         b.setObjectName("dialog_body")
         b.setWordWrap(True)
@@ -119,11 +123,11 @@ class KptBulkEditDialog(QDialog):
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setFixedHeight(220)
+        scroll.setFixedHeight(240)
         scroll.setFrameShape(QFrame.Shape.NoFrame)
         kw = QWidget()
         kl = QVBoxLayout(kw)
-        kl.setSpacing(3)
+        kl.setSpacing(4)
         self._checks: dict[int, QCheckBox] = {}
         for idx in range(NUM_KEYPOINTS):
             name = KEYPOINT_NAMES.get(idx, str(idx))
@@ -140,7 +144,7 @@ class KptBulkEditDialog(QDialog):
         inner.addWidget(self._status)
 
         btn_row = QHBoxLayout()
-        self._run_btn = QPushButton("> Zero Out Selected")
+        self._run_btn = QPushButton("> Zero Out Selected Keypoints")
         self._run_btn.setObjectName("primary_button")
         self._run_btn.clicked.connect(self._run)
         cancel_btn = QPushButton("Cancel")
@@ -154,34 +158,40 @@ class KptBulkEditDialog(QDialog):
     def _run(self) -> None:
         indices = {idx for idx, cb in self._checks.items() if cb.isChecked()}
         if not indices:
-            self._status.setText("Select at least one keypoint.")
+            self._status.setText("Please select at least one keypoint to proceed, Annotator.")
             return
 
         names = ", ".join(KEYPOINT_NAMES.get(i, str(i)) for i in sorted(indices))
+
         from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
 
         dlg = ConfirmDialog(
-            "Permanent Dataset Modification",
-            f"You are about to zero out the following keypoints across ALL label files "
-            f"in this dataset:\n\n{names}\n\n"
-            f"This will overwrite {len(indices)} keypoint(s) with x=0, y=0, v=0 in every "
-            f"annotation file. The operation cannot be undone with Ctrl+Z.\n\n"
-            f"Are you sure you want to proceed?",
-            "> Yes, zero out permanently",
-            "No, cancel",
+            "Permanent Dataset Modification — Are You Certain?",
+            f"Annotator, you are about to zero out the following keypoint(s) "
+            f"across every label file in this dataset:\n\n"
+            f"{names}\n\n"
+            f"This is a substantive, dataset-wide change. "
+            f"It cannot be reversed with Ctrl+Z, once deleted "
+            f"the originals are permanently gone.\n\n"
+            f"Proceed with the care befitting an expert.",
+            "> Yes, I understand — proceed",
+            "No, let me reconsider",
             self,
         )
         if dlg.exec() != dlg.DialogCode.Accepted:
             return
 
         self._run_btn.setEnabled(False)
+        self._status.setText("Working...")
         self._thread = QThread()
         self._worker = _BulkKptWorker(self._root, indices)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)
         self._worker.log.connect(self._status.setText)
         self._worker.finished.connect(self._on_done)
-        self._worker.failed.connect(lambda e: self._status.setText(f"Error: {e}"))
+        self._worker.failed.connect(
+            lambda e: self._status.setText(f"Something went wrong, Annotator: {e}")
+        )
         self._worker.finished.connect(self._thread.quit)
         self._worker.failed.connect(self._thread.quit)
         self._thread.finished.connect(self._thread.deleteLater)

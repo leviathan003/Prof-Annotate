@@ -66,8 +66,9 @@ class BBoxOverlay(QGraphicsItem):
         return self._rect.adjusted(-m, -m, m, m)
 
     def paint(self, painter, option, widget=None):
-        scale = painter.worldTransform().m11()
+        transform = painter.worldTransform()
         color = class_color(self._class_id)
+
         pw = 2.0 if self._selected else 1.5
         pen = QPen(color, pw)
         pen.setCosmetic(True)
@@ -75,17 +76,20 @@ class BBoxOverlay(QGraphicsItem):
         painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         painter.drawRect(self._rect)
 
-        lbl_pen = QPen(color)
-        lbl_pen.setCosmetic(True)
-        painter.setPen(lbl_pen)
-        painter.drawText(
-            QRectF(self._rect.x(), self._rect.y() - 14, self._rect.width(), 14),
-            Qt.AlignmentFlag.AlignLeft,
-            f"cls:{self._class_id}",
-        )
+        # Class label — fixed screen size
+        tl_screen = transform.map(QPointF(self._rect.x(), self._rect.y()))
+        painter.save()
+        painter.resetTransform()
+        font = QFont()
+        font.setPointSizeF(8.5)
+        painter.setFont(font)
+        lp = QPen(color)
+        lp.setCosmetic(True)
+        painter.setPen(lp)
+        painter.drawText(tl_screen + QPointF(2, -4), f"cls:{self._class_id}")
+        painter.restore()
 
         if self._selected:
-            transform = painter.worldTransform()
             h_ids = [
                 HANDLE_TL,
                 HANDLE_TC,

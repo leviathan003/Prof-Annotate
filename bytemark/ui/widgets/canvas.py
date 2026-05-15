@@ -27,6 +27,7 @@ from bytemark.config.constants import (
     CANVAS_ZOOM_MAX,
     CANVAS_ZOOM_MIN,
 )
+from bytemark.config.skeleton import KEYPOINT_NAMES
 from bytemark.core.annotation.models import (
     Annotation,
     BBox,
@@ -356,6 +357,12 @@ class AnnotationCanvas(QFrame):
             self._scene.removeItem(self._diff_item)
             self._diff_item = None
 
+    def _update_kpt_mode_label(self) -> None:
+        if self._active_draw_mode == "kpts" and self._kpt_tool:
+            idx = self._kpt_tool._current_idx
+            name = KEYPOINT_NAMES.get(idx, str(idx))
+            self._draw_mode_label.setText(f"[ KPTS MODE ]  →  {idx:02d} · {name}")
+
     def _create_seg_preview(self) -> None:
         if self._seg_preview_item is not None:
             self._scene.removeItem(self._seg_preview_item)
@@ -387,7 +394,9 @@ class AnnotationCanvas(QFrame):
 
     def _clear_warning(self) -> None:
         self._draw_mode_label.setStyleSheet("")
-        if self._active_draw_mode:
+        if self._active_draw_mode == "kpts":
+            self._update_kpt_mode_label()
+        elif self._active_draw_mode:
             self._draw_mode_label.setText(f"[ {self._active_draw_mode.upper()} MODE ]")
         else:
             self._draw_mode_label.hide()
@@ -451,6 +460,7 @@ class AnnotationCanvas(QFrame):
         self._select_instance(self._selected_instance)
         self.instance_selected.emit(self._annotations, self._selected_instance)
         self._mark_dirty()
+        self._update_kpt_mode_label()
 
     def _on_seg_closed(self, mask: SegmentationMask, class_id: int) -> None:
         if self._annotations is None or self._selected_instance is None:
@@ -473,21 +483,23 @@ class AnnotationCanvas(QFrame):
                 or self._annotations is None
                 or not self._annotations.instances[self._selected_instance].has_bbox()
             ):
-                self._show_warning("Draw and select a bounding box first.")
+                self._show_warning("A bounding box must be drawn and selected first, Annotator.")
                 return
 
         self._deactivate_all_tools()
         self._active_draw_mode = mode
-        self._draw_mode_label.setText(f"[ {mode.upper()} MODE ]")
         self._draw_mode_label.setStyleSheet("")
         self._draw_mode_label.show()
 
         if mode == "bbox" and self._bbox_tool:
             self._bbox_tool.activate()
+            self._draw_mode_label.setText("[ BBOX MODE ]")
         elif mode == "kpts" and self._kpt_tool:
             self._kpt_tool.activate()
+            self._update_kpt_mode_label()
         elif mode == "seg" and self._seg_tool:
             self._seg_tool.activate()
+            self._draw_mode_label.setText("[ SEG MODE ]")
             self._create_seg_preview()
 
     def _deactivate_all_tools(self) -> None:
@@ -557,7 +569,6 @@ class AnnotationCanvas(QFrame):
             self._annotations = state
             self._rebuild_overlays()
             self._mark_dirty()
-            # Restore kpt tool index to next unfilled slot
             if (
                 self._active_draw_mode == "kpts"
                 and self._kpt_tool
@@ -575,7 +586,7 @@ class AnnotationCanvas(QFrame):
                         0,
                     )
                     self._kpt_tool._current_idx = next_idx
-        # Always restore seg preview if in seg mode
+                    self._update_kpt_mode_label()
         if self._active_draw_mode == "seg":
             self._create_seg_preview()
 
@@ -618,7 +629,6 @@ class AnnotationCanvas(QFrame):
                 self._save()
                 return True
             if key == Qt.Key.Key_Z:
-                # If seg tool is active and has in-progress points, undo last point only
                 if (
                     self._active_draw_mode == "seg"
                     and self._seg_tool
@@ -627,7 +637,6 @@ class AnnotationCanvas(QFrame):
                     self._seg_tool.undo_last_point()
                     self._update_seg_preview()
                     return True
-                # Otherwise bubble up to main window global undo
                 self.undo_requested.emit()
                 return True
             if key == Qt.Key.Key_Y:
@@ -704,12 +713,14 @@ class AnnotationCanvas(QFrame):
             self._bbox_tool.mouse_press(scene_pos)
         elif self._active_draw_mode == "kpts" and self._kpt_tool:
             if not self._point_inside_selected_bbox(scene_pos):
-                self._show_warning("Keypoint must lie inside the bounding box.")
+                self._show_warning("Keypoints must lie within the bounding box, Annotator.")
                 return
             self._kpt_tool.mouse_press(scene_pos)
         elif self._active_draw_mode == "seg" and self._seg_tool:
             if not self._point_inside_selected_bbox(scene_pos):
-                self._show_warning("Segmentation point must lie inside the bounding box.")
+                self._show_warning(
+                    "Segmentation points must lie within the bounding box, Annotator."
+                )
                 return
             self._seg_tool.mouse_press(scene_pos)
             self._update_seg_preview()
@@ -776,7 +787,6 @@ class AnnotationCanvas(QFrame):
         if self._annotations is None:
             return
 
-        # 1. Resize handles only (NOT move) on the selected bbox
         if self._selected_instance is not None:
             for j, item in enumerate(self._bbox_items):
                 if self._bbox_inst_map[j] == self._selected_instance:
@@ -786,7 +796,6 @@ class AnnotationCanvas(QFrame):
                         return
                     break
 
-        # 2. Keypoint hit
         for j, item in enumerate(self._kpt_items):
             if not item.isVisible():
                 continue
@@ -803,7 +812,6 @@ class AnnotationCanvas(QFrame):
                 self.instance_selected.emit(self._annotations, inst_idx)
                 return
 
-        # 3. Seg point hit
         for j, item in enumerate(self._seg_items):
             if not item.isVisible():
                 continue
@@ -820,7 +828,6 @@ class AnnotationCanvas(QFrame):
                 self.instance_selected.emit(self._annotations, inst_idx)
                 return
 
-        # 4. HANDLE_MOVE on selected bbox
         if self._selected_instance is not None:
             for j, item in enumerate(self._bbox_items):
                 if self._bbox_inst_map[j] == self._selected_instance:
@@ -829,7 +836,6 @@ class AnnotationCanvas(QFrame):
                         return
                     break
 
-        # 5. Bbox body → select only
         for j, item in enumerate(self._bbox_items):
             if not item.isVisible():
                 continue
@@ -1050,8 +1056,13 @@ class AnnotationCanvas(QFrame):
             parts.append("keypoints")
         if inst.has_mask():
             parts.append("segmentation mask")
-        body = "This will permanently delete:\n• " + "\n• ".join(parts)
-        dlg = ConfirmDialog("Delete Annotation Instance?", body, "> Yes, delete", "No, cancel")
+        body = (
+            "Annotator, you are about to permanently remove this annotation instance, "
+            "which contains:\n• "
+            + "\n• ".join(parts)
+            + "\n\nThis action will be added to the undo stack, but proceed with care."
+        )
+        dlg = ConfirmDialog("Remove Annotation Instance?", body, "> Yes, remove it", "No, keep it")
         if dlg.exec() != dlg.DialogCode.Accepted:
             return False
         self._undo.push(self._annotations)

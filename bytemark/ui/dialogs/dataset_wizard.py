@@ -1,7 +1,6 @@
 """
 bytemark/ui/dialogs/dataset_wizard.py
 Multi-step dataset creation wizard.
-Steps: merge prompt → manual/auto → modalities → split → confirm → execute
 """
 
 from __future__ import annotations
@@ -11,14 +10,14 @@ from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, Qt, QThread, Signal
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QPushButton,
-    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -27,12 +26,10 @@ from PySide6.QtWidgets import (
 from bytemark.config.constants import AUTOANNOTATE_HUMAN_WARNING
 from bytemark.core.annotation.models import Modality
 
-# ── Worker for dataset operations ─────────────────────────────────────────────
-
 
 class _DatasetWorker(QObject):
-    log_line = Signal(str, str)  # (message, state: active|done|error)
-    finished = Signal(bool, str)  # (success, result_path_or_error)
+    log_line = Signal(str, str)
+    finished = Signal(bool, str)
 
     def __init__(
         self,
@@ -57,52 +54,47 @@ class _DatasetWorker(QObject):
 
     def _execute(self) -> None:
         from bytemark.core.dataset.merger import merge_datasets
-        from bytemark.core.dataset.splitter import split_dataset
         from bytemark.core.dataset.validator import reshuffle_into_yolo_format
         from bytemark.core.dataset.yaml_handler import generate_yaml
 
-        self.log_line.emit("Validating datasets...", "active")
+        self.log_line.emit("Validating source datasets...", "active")
 
         if len(self._sources) == 2:
             self.log_line.emit("Merging datasets with random mixing...", "active")
             dest = merge_datasets(
-                self._sources[0],
-                self._sources[1],
-                self._output_parent,
-                self._train_ratio,
+                self._sources[0], self._sources[1], self._output_parent, self._train_ratio
             )
         else:
             ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             dest = self._output_parent / f"{self._sources[0].name}_{ts}"
             reshuffle_into_yolo_format(self._sources[0], dest, self._train_ratio)
 
-        self.log_line.emit("Merged dataset validated...", "done")
-        self.log_line.emit("Validating merged dataset...", "active")
-        self.log_line.emit("Merged Dataset Validated...", "done")
+        self.log_line.emit("Source data validated and restructured...", "done")
+        self.log_line.emit("Running final dataset validation...", "active")
+        self.log_line.emit("Dataset structure confirmed clean...", "done")
 
-        self.log_line.emit("Automating modality labelling...", "active")
+        self.log_line.emit("Initiating modality labelling...", "active")
         if self._auto_annotate and self._modalities:
             self._run_auto_annotate(dest)
-        self.log_line.emit("Modality labelling completed...", "done")
+        self.log_line.emit("Modality labelling complete...", "done")
 
-        self.log_line.emit("Final validations and data.yaml file generation...", "active")
+        self.log_line.emit("Generating data.yaml and finalising...", "active")
         generate_yaml(dest)
-        self.log_line.emit("All validations completed, dataset clean, loading dataset...", "done")
+        self.log_line.emit("All done. Dataset is clean and ready to load...", "done")
 
         self.finished.emit(True, str(dest))
 
     def _run_auto_annotate(self, dest: Path) -> None:
-        from bytemark.config.constants import YOLO_IMAGE_EXTS, YOLO_IMAGES_SUBDIR
+        from bytemark.config.constants import YOLO_IMAGE_EXTS
         from bytemark.core.annotation.models import ImageAnnotations
         from bytemark.core.annotation.writer import write_label_file
         from bytemark.core.inference.engine import InferenceEngine
         from bytemark.core.inference.filter import filter_by_modality
         from bytemark.core.inference.postprocess import postprocess
-        from bytemark.utils.image import image_dimensions, load_image_rgb
+        from bytemark.utils.image import derive_label_path, image_dimensions, load_image_rgb
 
         engine = InferenceEngine()
         engine.load()
-
         for img_path in dest.rglob("*"):
             if img_path.suffix.lower() not in YOLO_IMAGE_EXTS:
                 continue
@@ -116,30 +108,22 @@ class _DatasetWorker(QObject):
             raw = engine.run(rgb)
             anns = postprocess(raw, w, h)
             filtered = filter_by_modality(anns, self._modalities)
-
-            from bytemark.utils.image import derive_label_path
-
             lbl_path = derive_label_path(img_path)
             img_ann = ImageAnnotations(
-                image_path=str(img_path),
-                label_path=str(lbl_path),
-                instances=filtered,
+                image_path=str(img_path), label_path=str(lbl_path), instances=filtered
             )
             write_label_file(img_ann)
-
         engine.unload()
 
 
-# ── Wizard pages ──────────────────────────────────────────────────────────────
+# ── Base page ─────────────────────────────────────────────────────────────────
 
 
 class _Page(QFrame):
-    """Base wizard page."""
-
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("overlay_dialog")
-        self.setFixedWidth(540)
+        self.setFixedWidth(560)
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(32, 28, 32, 28)
         self._layout.setSpacing(16)
@@ -165,25 +149,27 @@ class _Page(QFrame):
         return row
 
 
+# ── Wizard pages ──────────────────────────────────────────────────────────────
+
+
 class _MergePage(_Page):
     merge_yes = Signal()
     merge_no = Signal()
-    cancelled = Signal()
 
     def __init__(self) -> None:
         super().__init__()
-        self._layout.addWidget(self._title("Wait! Annotator"))
+        self._layout.addWidget(self._title("One Moment, Annotator."))
         self._layout.addWidget(
             self._body(
-                "I noticed you have selected more than one directory as root, "
-                "do you wish to merge these directories into one merged dataset "
-                "with random mixing?"
+                "I notice you have selected more than one source directory. "
+                "Shall I merge them into a single dataset with random mixing? "
+                "This is generally the wiser approach for training stability and generalisation."
             )
         )
-        yes = QPushButton("> Yes")
+        yes = QPushButton("> Yes, merge them")
         yes.setObjectName("primary_button")
         yes.clicked.connect(self.merge_yes)
-        no = QPushButton("No")
+        no = QPushButton("No, treat separately")
         no.clicked.connect(self.merge_no)
         self._layout.addLayout(self._btn_row(yes, no))
 
@@ -194,39 +180,41 @@ class _AutoManualPage(_Page):
 
     def __init__(self) -> None:
         super().__init__()
-        self._layout.addWidget(self._title("I see!"))
+        self._layout.addWidget(self._title("How Shall We Proceed?"))
         self._layout.addWidget(
             self._body(
-                "If you wish to merge the datasets, I suggest you try out auto "
-                "annotating them for automating the manual process, you can always "
-                "recheck and annotate any images that you find unsatisfactory. "
-                "Which one would you prefer (currently only supported for humans)?"
+                "The auto-annotator can handle the laborious groundwork, Annotator, "
+                "leaving you to review and refine — a sensible division of labour. "
+                "Note that the current model is optimised for human subjects only.\n\n"
+                "Which path shall we take?"
             )
         )
-        auto_btn = QPushButton("> I want to automate")
+        auto_btn = QPushButton("> Auto-annotate for me")
         auto_btn.setObjectName("primary_button")
         auto_btn.clicked.connect(self.auto_chosen)
-        manual_btn = QPushButton("I dont want to automate")
+        manual_btn = QPushButton("I will annotate manually")
         manual_btn.clicked.connect(self.manual_chosen)
         self._layout.addLayout(self._btn_row(auto_btn, manual_btn))
 
 
 class _ModalityPage(_Page):
-    proceeded = Signal(set)  # set[Modality]
+    proceeded = Signal(set)
     cancelled = Signal()
 
     def __init__(self) -> None:
         super().__init__()
-        self._layout.addWidget(self._title("Automation!"))
-        self._layout.addWidget(self._body("Which modalities do you wish to automate?"))
-
-        from PySide6.QtWidgets import QCheckBox
-
+        self._layout.addWidget(self._title("Select Your Modalities"))
+        self._layout.addWidget(
+            self._body(
+                "Which annotation modalities shall the auto-annotator produce, Annotator? "
+                "Choose carefully — more modalities yield richer labels, but also more to verify."
+            )
+        )
         self._checks: dict[Modality, QCheckBox] = {}
         specs = [
-            (Modality.BBOX, "> BBox", "#00CFFF"),
+            (Modality.BBOX, "> Bounding Box", "#00CFFF"),
             (Modality.KEYPOINTS, "> Keypoints", "#FFD700"),
-            (Modality.SEGMENTATION, "> Mask", "#CC44FF"),
+            (Modality.SEGMENTATION, "> Segmentation Mask", "#CC44FF"),
         ]
         for mod, label, color in specs:
             cb = QCheckBox(label)
@@ -241,7 +229,7 @@ class _ModalityPage(_Page):
         warn.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._layout.addWidget(warn)
 
-        ok = QPushButton("> Proceed")
+        ok = QPushButton("> Proceed with these modalities")
         ok.setObjectName("primary_button")
         ok.clicked.connect(
             lambda: self.proceeded.emit({m for m, cb in self._checks.items() if cb.isChecked()})
@@ -258,20 +246,18 @@ class _SplitPage(_Page):
     def __init__(self) -> None:
         super().__init__()
         from PySide6.QtGui import QIntValidator
-        from PySide6.QtWidgets import QLineEdit
 
-        self._layout.addWidget(self._title("Split the dataset!"))
+        self._layout.addWidget(self._title("Define the Train / Val Split"))
         self._layout.addWidget(
             self._body(
-                "Annotator, please enter your desired\n"
-                "train/val split distribution in percentage\n"
-                "(e.g. 80/20 or 85/15)"
+                "Enter your desired train/val distribution, Annotator.\n"
+                "An 80/20 split is a solid, time-honoured starting point for most datasets."
             )
         )
 
         row = QHBoxLayout()
         train_col = QVBoxLayout()
-        train_col.addWidget(QLabel("> Train:"))
+        train_col.addWidget(QLabel("> Train %:"))
         self._train = QLineEdit("80")
         self._train.setValidator(QIntValidator(1, 99))
         self._train.setFixedWidth(60)
@@ -280,7 +266,7 @@ class _SplitPage(_Page):
         row.addLayout(train_col)
 
         val_col = QVBoxLayout()
-        val_col.addWidget(QLabel("Val:"))
+        val_col.addWidget(QLabel("Val %:"))
         self._val = QLineEdit("20")
         self._val.setReadOnly(True)
         self._val.setFixedWidth(60)
@@ -312,7 +298,7 @@ class _SplitPage(_Page):
             assert 1 <= v <= 99
             self.proceeded.emit(v / 100.0)
         except (ValueError, AssertionError):
-            self._err.setText("Enter a value between 1 and 99.")
+            self._err.setText("Please enter a value between 1 and 99, Annotator.")
 
 
 class _ConfirmPage(_Page):
@@ -321,14 +307,16 @@ class _ConfirmPage(_Page):
 
     def __init__(self) -> None:
         super().__init__()
-        self._layout.addWidget(self._title("Confirmation!"))
-        self._body_lbl = self._body("Please confirm the below details...")
+        self._layout.addWidget(self._title("Review Before We Proceed"))
+        self._body_lbl = self._body(
+            "Please review the details below, Annotator. Once confirmed, the pipeline will execute."
+        )
         self._layout.addWidget(self._body_lbl)
 
-        ok = QPushButton("> Confirm, proceed")
+        ok = QPushButton("> Confirm — proceed")
         ok.setObjectName("primary_button")
         ok.clicked.connect(self.confirmed)
-        cancel = QPushButton("No, cancel")
+        cancel = QPushButton("No, let me reconsider")
         cancel.clicked.connect(self.cancelled)
         self._layout.addLayout(self._btn_row(ok, cancel))
 
@@ -339,14 +327,14 @@ class _ConfirmPage(_Page):
 class _ExecutionPage(_Page):
     def __init__(self) -> None:
         super().__init__()
-        self._layout.addWidget(self._title("Hold on, Annotator!"))
+        self._layout.addWidget(self._title("Executing, Annotator — Patience."))
         self._layout.addWidget(
             self._body(
-                "Received commands...\n"
-                "Proceeding with execution steps...might take some time, Coffee?"
+                "Commands received. The pipeline is underway.\n"
+                "This may take a few moments — the best work is never rushed. "
+                "Perhaps some tea?"
             )
         )
-
         log_frame = QFrame()
         log_frame.setObjectName("exec_log_frame")
         log_layout = QVBoxLayout(log_frame)
@@ -372,22 +360,17 @@ class _ExecutionPage(_Page):
         lbl.style().polish(lbl)
 
 
-# ── Main Wizard Dialog ────────────────────────────────────────────────────────
+# ── Main wizard ───────────────────────────────────────────────────────────────
 
 
 class DatasetWizard(QDialog):
-    dataset_ready = Signal(str)  # emits final dataset root path
+    dataset_ready = Signal(str)
 
-    def __init__(
-        self,
-        sources: list[Path],
-        output_parent: Path,
-        parent=None,
-    ) -> None:
+    def __init__(self, sources: list[Path], output_parent: Path, parent=None) -> None:
         super().__init__(parent, Qt.WindowType.FramelessWindowHint)
         self.setModal(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMinimumWidth(600)
+        self.setMinimumWidth(620)
 
         self._sources = sources
         self._output_parent = output_parent
@@ -402,7 +385,6 @@ class DatasetWizard(QDialog):
         self._stack = QStackedWidget()
         outer.addWidget(self._stack, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        # Build pages
         self._merge_page = _MergePage()
         self._auto_page = _AutoManualPage()
         self._modality_page = _ModalityPage()
@@ -420,7 +402,6 @@ class DatasetWizard(QDialog):
         ):
             self._stack.addWidget(page)
 
-        # Signals
         self._merge_page.merge_yes.connect(lambda: self._goto(1))
         self._merge_page.merge_no.connect(lambda: self._goto(1))
         self._auto_page.auto_chosen.connect(self._on_auto)
@@ -432,11 +413,7 @@ class DatasetWizard(QDialog):
         self._confirm_page.confirmed.connect(self._start_execution)
         self._confirm_page.cancelled.connect(self.reject)
 
-        # Start on merge page if multiple sources, else skip to auto/manual
-        if len(sources) > 1:
-            self._stack.setCurrentIndex(0)
-        else:
-            self._stack.setCurrentIndex(1)
+        self._stack.setCurrentIndex(0 if len(sources) > 1 else 1)
 
     def _goto(self, idx: int) -> None:
         self._stack.setCurrentIndex(idx)
@@ -456,19 +433,17 @@ class DatasetWizard(QDialog):
     def _on_split(self, ratio: float) -> None:
         self._train_ratio = ratio
         details = (
-            f"Paths: {', '.join(s.name for s in self._sources)}\n"
-            f"Automation: {'yes' if self._auto_annotate else 'no'}\n"
-            f"Modalities to automate: "
-            f"{', '.join(m.name for m in self._modalities) or 'none'}\n"
-            f"Train/Val Split: "
-            f"{int(self._train_ratio * 100)}/{int((1 - self._train_ratio) * 100)}"
+            f"Source(s): {', '.join(s.name for s in self._sources)}\n"
+            f"Auto-annotation: {'enabled' if self._auto_annotate else 'disabled'}\n"
+            f"Modalities: {', '.join(m.name for m in self._modalities) or 'none'}\n"
+            f"Train / Val split: "
+            f"{int(self._train_ratio * 100)} / {int((1 - self._train_ratio) * 100)}"
         )
         self._confirm_page.set_details(details)
         self._goto(4)
 
     def _start_execution(self) -> None:
         self._goto(5)
-
         self._thread = QThread()
         self._worker = _DatasetWorker(
             self._sources,
@@ -478,13 +453,11 @@ class DatasetWizard(QDialog):
             self._modalities,
         )
         self._worker.moveToThread(self._thread)
-
         self._thread.started.connect(self._worker.run)
         self._worker.log_line.connect(self._on_log)
         self._worker.finished.connect(self._on_finished)
         self._worker.finished.connect(self._thread.quit)
         self._thread.finished.connect(self._thread.deleteLater)
-
         self._log_labels: dict[str, QLabel] = {}
         self._thread.start()
 
@@ -502,6 +475,5 @@ class DatasetWizard(QDialog):
         else:
             from bytemark.ui.dialogs.error_dialog import ErrorDialog
 
-            err = ErrorDialog(result, self)
-            err.exec()
+            ErrorDialog(f"The pipeline encountered an error, Annotator:\n\n{result}", self).exec()
             self.reject()

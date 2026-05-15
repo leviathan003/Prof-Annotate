@@ -12,7 +12,6 @@ from typing import Optional
 from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QApplication,
     QDialog,
     QFileDialog,
     QFrame,
@@ -31,7 +30,6 @@ from bytemark.config.constants import (
     APP_VERSION,
     JSON_PANEL_DEFAULT_WIDTH,
     LAYOUT_FILE,
-    SESSION_CACHE_DIR,
     SIDEBAR_DEFAULT_WIDTH,
     SPLITTER_CANVAS_STRETCH,
     SPLITTER_JSON_STRETCH,
@@ -45,18 +43,13 @@ from bytemark.core.dataset.validator import (
     SCENARIO_EMPTY,
     SCENARIO_IMAGES_ONLY_FLAT,
     SCENARIO_LABELS_ONLY,
-    SCENARIO_OK,
     SCENARIO_STRUCTURED_ALL_EMPTY,
     SCENARIO_STRUCTURED_LABELS_EMPTY,
     SCENARIO_STRUCTURED_ONE_SPLIT,
     diagnose_dataset,
 )
 from bytemark.core.dataset.yaml_handler import generate_yaml
-from bytemark.core.git.reader import (
-    find_repo_root,
-    get_last_annotation_commit,
-    is_git_repo,
-)
+from bytemark.core.git.reader import find_repo_root, get_last_annotation_commit, is_git_repo
 from bytemark.core.recovery.autosave import clear_session, load_session, save_session
 from bytemark.ui.dialogs.autoannotate_prompt import AutoAnnotatePrompt
 from bytemark.ui.dialogs.dataset_wizard import DatasetWizard
@@ -94,14 +87,14 @@ class _ReshuffleWorker(QObject):
                 if p.is_file() and p.suffix.lower() in YOLO_IMAGE_EXTS
             ]
             self.log_line.emit(
-                f"Found {len(images)} image(s), preparing output structure...", "done"
+                f"Found {len(images)} image(s) — preparing output structure...", "done"
             )
             self.log_line.emit("Shuffling and splitting into train / val...", "active")
             result = reshuffle_into_yolo_format(self._root, self._dest)
             self.log_line.emit("Train / val split complete...", "done")
             self.log_line.emit("Generating data.yaml and finalising...", "active")
             generate_yaml(result)
-            self.log_line.emit("Dataset ready, loading...", "done")
+            self.log_line.emit("Dataset ready. Loading now...", "done")
             self.finished.emit(result)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -190,19 +183,19 @@ class _ReshuffleProgressDialog(QDialog):
 
         frame = QFrame()
         frame.setObjectName("overlay_dialog")
-        frame.setFixedWidth(500)
+        frame.setFixedWidth(520)
         inner = QVBoxLayout(frame)
         inner.setContentsMargins(32, 28, 32, 28)
         inner.setSpacing(16)
 
-        title = QLabel("Hold on, Annotator!")
+        title = QLabel("Patience, Annotator.")
         title.setObjectName("dialog_title")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         inner.addWidget(title)
 
         body = QLabel(
-            "Received command to reshuffle dataset...\n"
-            "Proceeding with execution steps — might take a moment, Coffee?"
+            "The reshuffle command has been received and is underway.\n"
+            "This may take a moment — the best work is never rushed."
         )
         body.setObjectName("dialog_body")
         body.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -252,7 +245,6 @@ class MainWindow(QMainWindow):
         self._pending_gen_yaml: bool = False
         self._bg_thread: Optional[QThread] = None
         self._load_thread: Optional[QThread] = None
-        # Stack of {Path: original_text} snapshots for dataset-level undo
         self._dataset_undo_stack: list[dict] = []
 
         self._build_ui()
@@ -329,7 +321,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._create_btn)
 
         self._kpt_edit_btn = QPushButton("Edit Keypoints")
-        self._kpt_edit_btn.setObjectName("help_btn")
+        self._kpt_edit_btn.setObjectName("kpt_edit_btn")
         self._kpt_edit_btn.setEnabled(False)
         layout.addWidget(self._kpt_edit_btn)
 
@@ -367,12 +359,9 @@ class MainWindow(QMainWindow):
         self._canvas.auto_annotate_triggered.connect(self._on_auto_annotate_single)
         self._canvas.navigate_next.connect(self._navigate_next)
         self._canvas.navigate_prev.connect(self._navigate_prev)
-        # Canvas emits undo_requested; main window decides whether to do
-        # per-image undo or dataset-level undo
         self._canvas.undo_requested.connect(self._on_global_undo)
 
         self._modality_selector.modalities_changed.connect(self._canvas.set_visible_modalities)
-
         self._json_editor.annotation_edited.connect(self._on_json_edited)
         self._yaml_editor.yaml_saved.connect(lambda _: None)
 
@@ -457,16 +446,17 @@ class MainWindow(QMainWindow):
         unexpected = [d for d in subdirs if d not in ("images", "labels")]
         if unexpected:
             ErrorDialog(
-                "Invalid directory structure.\n\n"
-                f"Unexpected folder(s) found:\n{', '.join(sorted(unexpected))}\n\n"
-                "Root must only contain:\n\n"
+                "Annotator, the directory structure here is not what I expected.\n\n"
+                f"Unexpected folder(s) found: {', '.join(sorted(unexpected))}\n\n"
+                "A proper dataset root must contain only:\n\n"
                 "  root/\n"
                 "  ├── images/\n"
                 "  │     ├── train/\n"
                 "  │     └── val/\n"
                 "  └── labels/\n"
                 "        ├── train/\n"
-                "        └── val/",
+                "        └── val/\n\n"
+                "Please correct the structure and return.",
                 self,
             ).exec()
             return
@@ -477,34 +467,39 @@ class MainWindow(QMainWindow):
 
         if diag.scenario == SCENARIO_EMPTY:
             ErrorDialog(
-                "This folder is empty.\nNo images or annotation files were found.", self
+                "The folder appears to be empty, Annotator.\n\n"
+                "No images or annotation files were found within. "
+                "Perhaps verify the path and try again.",
+                self,
             ).exec()
             return
 
         if diag.scenario == SCENARIO_LABELS_ONLY:
             ErrorDialog(
-                "This folder contains annotation files but no images.\n"
-                "Please select the folder that also contains the source images.",
+                "Annotation files are present, but the images are nowhere to be found, Annotator.\n\n"
+                "Please select the directory that contains both the images and their labels.",
                 self,
             ).exec()
             return
 
         if diag.scenario == SCENARIO_STRUCTURED_ALL_EMPTY:
             ErrorDialog(
-                "The dataset directories (images/train, images/val) exist "
-                "but contain no images.\nPlease add images before opening.",
+                "The dataset structure exists, but the image directories are empty, Annotator.\n\n"
+                "Populate images/train and images/val before proceeding — "
+                "there is little to annotate without source material.",
                 self,
             ).exec()
             return
 
         if diag.scenario == SCENARIO_IMAGES_ONLY_FLAT:
             dlg = ConfirmDialog(
-                "No Dataset Structure Found",
-                f"This folder contains {diag.flat_image_count} image(s) but no "
-                "YOLO dataset layout (images/train, images/val).\n\n"
-                "Would you like to create a new dataset from these images?",
-                "> Yes, create dataset",
-                "No, cancel",
+                "No Dataset Structure Detected",
+                f"I see {diag.flat_image_count} image(s) here, Annotator, "
+                f"but no YOLO layout to speak of — no images/train, no images/val.\n\n"
+                f"Shall I organise these into a proper dataset structure for you? "
+                f"It is, I assure you, the wiser path forward.",
+                "> Yes, structure the dataset",
+                "No, leave as-is",
                 self,
             )
             if dlg.exec() != dlg.DialogCode.Accepted:
@@ -524,10 +519,11 @@ class MainWindow(QMainWindow):
             count = diag.train_image_count if active == YOLO_TRAIN_DIR else diag.val_image_count
             dlg = ConfirmDialog(
                 "Incomplete Train / Val Split",
-                f"Only the '{active}' split contains images ({count} image(s)).\n\n"
-                "Would you like to reshuffle everything into a balanced train/val split?\n"
-                "Choose 'No' to open the existing images as-is.",
-                "> Yes, reshuffle",
+                f"Only the '{active}' split holds images ({count} image(s)), Annotator. "
+                f"A single-split dataset is rather lopsided for training.\n\n"
+                f"Shall I reshuffle everything into a balanced train/val split? "
+                f"Choosing 'No' will open the images as they stand.",
+                "> Yes, reshuffle and balance",
                 "No, open as-is",
                 self,
             )
@@ -542,12 +538,13 @@ class MainWindow(QMainWindow):
         if diag.scenario == SCENARIO_STRUCTURED_LABELS_EMPTY:
             dlg = ConfirmDialog(
                 "No Annotations Found",
-                f"Dataset has {diag.total_structured_images} image(s) across "
-                "train/val but no annotation files.\n\n"
-                "Would you like to auto-annotate all images now?\n"
-                "You can also annotate manually after opening.",
+                f"The dataset carries {diag.total_structured_images} image(s) "
+                f"but not a single annotation, Annotator. A blank canvas awaits.\n\n"
+                f"Shall I run the auto-annotator across all images now? "
+                f"You may always refine the results manually afterwards — "
+                f"the machine lays the groundwork, the expert perfects it.",
                 "> Yes, auto-annotate",
-                "No, open as-is",
+                "No, I will annotate manually",
                 self,
             )
             if dlg.exec() == dlg.DialogCode.Accepted:
@@ -695,7 +692,10 @@ class MainWindow(QMainWindow):
             except RuntimeError:
                 pass
             self._reshuffle_dlg = None
-        ErrorDialog(msg, self).exec()
+        ErrorDialog(
+            f"Something went wrong, Annotator. The details are as follows:\n\n{msg}",
+            self,
+        ).exec()
 
     def _set_loading(self, loading: bool, message: str = "") -> None:
         self._canvas.setEnabled(not loading)
@@ -717,10 +717,11 @@ class MainWindow(QMainWindow):
             from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
 
             more = ConfirmDialog(
-                "Add another directory?",
-                "Do you wish to add another source directory?",
-                "> Yes, add more",
-                "No, proceed",
+                "Another Source Directory?",
+                "Shall we include another source directory in this dataset, Annotator? "
+                "Multiple sources will be merged with random mixing.",
+                "> Yes, add another",
+                "No, proceed with these",
                 self,
             )
             if more.exec() != more.DialogCode.Accepted:
@@ -773,7 +774,6 @@ class MainWindow(QMainWindow):
     def _on_image_loaded(self, path: str, w: int, h: int, corrupted: bool, annotated: bool) -> None:
         filename = Path(path).name
         self._status_bar.update_image_info(filename, w, h, corrupted, annotated)
-
         if self._is_git_repo and self._current_entry:
             commit = get_last_annotation_commit(self._current_entry.label_path, self._git_root)
             self._status_bar.update_git_info(commit)
@@ -801,19 +801,12 @@ class MainWindow(QMainWindow):
     # ── Global undo ───────────────────────────────────────────────────────────
 
     def _on_global_undo(self) -> None:
-        """
-        Priority: dataset-level undo (bulk kpt edit) first; fall back to
-        per-image canvas undo stack.
-        """
         if self._dataset_undo_stack:
             originals = self._dataset_undo_stack.pop()
             for path, content in originals.items():
                 Path(path).write_text(content, encoding="utf-8")
-            # Reload yaml panel
             if self._dataset_root:
-                yaml_path = self._dataset_root / "data.yaml"
-                self._yaml_editor.load(yaml_path)
-            # Reload current image annotations from the restored label file
+                self._yaml_editor.load(self._dataset_root / "data.yaml")
             if self._current_entry:
                 self._canvas.load_entry(self._current_entry)
             self._status_bar.showMessage("Dataset operation undone.")
@@ -835,7 +828,7 @@ class MainWindow(QMainWindow):
         self._dataset_undo_stack.append(originals)
         self._start_index_load(self._dataset_root, flat=False, gen_yaml=False)
 
-    # ── JSON editing ─────────────────────────────────────────────────────────
+    # ── JSON editing ──────────────────────────────────────────────────────────
 
     def _on_json_edited(self, json_text: str) -> None:
         import json as _json
@@ -929,7 +922,10 @@ class MainWindow(QMainWindow):
         self._ai_thread.started.connect(self._ai_worker.run)
         self._ai_worker.done.connect(self._on_auto_done, Qt.ConnectionType.QueuedConnection)
         self._ai_worker.fail.connect(
-            lambda msg: ErrorDialog(msg, self).exec(), Qt.ConnectionType.QueuedConnection
+            lambda msg: ErrorDialog(
+                f"The auto-annotator encountered a problem, Annotator:\n\n{msg}", self
+            ).exec(),
+            Qt.ConnectionType.QueuedConnection,
         )
         self._ai_worker.done.connect(self._ai_thread.quit)
         self._ai_worker.fail.connect(self._ai_thread.quit)

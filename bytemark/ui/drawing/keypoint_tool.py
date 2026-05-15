@@ -1,7 +1,5 @@
 """
 bytemark/ui/drawing/keypoint_tool.py
-Keypoint placement tool. Activated with 'K'.
-Cycles through keypoint indices 0..NUM_KEYPOINTS-1 on each click.
 """
 
 from __future__ import annotations
@@ -9,8 +7,8 @@ from __future__ import annotations
 from typing import Callable
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QBrush, QColor, QPen
-from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsScene
+from PySide6.QtGui import QBrush, QColor, QFont, QPen
+from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsScene, QGraphicsSimpleTextItem
 
 from bytemark.config.constants import NUM_KEYPOINTS
 from bytemark.config.skeleton import KEYPOINT_NAMES
@@ -19,7 +17,13 @@ from bytemark.utils.color import keypoint_color
 
 
 class KeypointTool:
-    def __init__(self, scene, img_w, img_h, on_keypoint_placed):
+    def __init__(
+        self,
+        scene: QGraphicsScene,
+        img_w: int,
+        img_h: int,
+        on_keypoint_placed: Callable[[int, Keypoint], None],
+    ) -> None:
         self._scene = scene
         self._img_w = img_w
         self._img_h = img_h
@@ -28,6 +32,9 @@ class KeypointTool:
         self._active = False
         self._cursor_item = None
         self._zoom = 1.0
+
+    def set_zoom(self, zoom: float) -> None:
+        self._zoom = max(0.01, zoom)
 
     def activate(self, start_idx: int = 0) -> None:
         self._active = True
@@ -43,18 +50,14 @@ class KeypointTool:
     def current_name(self) -> str:
         return KEYPOINT_NAMES.get(self._current_idx, str(self._current_idx))
 
-    def set_zoom(self, zoom: float) -> None:
-        self._zoom = max(0.01, zoom)
-
     def mouse_move(self, scene_pos: QPointF) -> bool:
         if not self._active:
             return False
         self._remove_cursor()
-        # Keep cursor dot same screen size as drawn keypoints (~3 screen px)
         r = 3.0 / self._zoom
         color = keypoint_color()
-        pen = QPen(Qt.GlobalColor.white, max(0.5, 0.8 / self._zoom))
-        self._cursor_item = self._scene.addEllipse(
+        pen = QPen(Qt.GlobalColor.white, max(0.4, 0.7 / self._zoom))
+        ellipse = self._scene.addEllipse(
             scene_pos.x() - r,
             scene_pos.y() - r,
             r * 2,
@@ -62,17 +65,24 @@ class KeypointTool:
             pen,
             QBrush(color),
         )
+        # Name label — rendered in scene space but sized for screen
+        name = KEYPOINT_NAMES.get(self._current_idx, str(self._current_idx))
+        label_text = f"{self._current_idx:02d} · {name}"
+        text = self._scene.addSimpleText(label_text)
+        font = QFont()
+        font.setPointSizeF(max(5.0, 8.0 / self._zoom))
+        text.setFont(font)
+        text.setBrush(QBrush(QColor("#FFFFFF")))
+        text.setPos(scene_pos.x() + r + 2 / self._zoom, scene_pos.y() - 5 / self._zoom)
+        # Group both items under a single handle
+        self._cursor_item = (ellipse, text)
         return True
 
     def mouse_press(self, scene_pos: QPointF) -> bool:
         if not self._active:
             return False
         kp = Keypoint.from_pixel(
-            scene_pos.x(),
-            scene_pos.y(),
-            self._img_w,
-            self._img_h,
-            visibility=2,
+            scene_pos.x(), scene_pos.y(), self._img_w, self._img_h, visibility=2
         )
         self._on_placed(self._current_idx, kp)
         self._current_idx = (self._current_idx + 1) % NUM_KEYPOINTS
@@ -83,5 +93,6 @@ class KeypointTool:
 
     def _remove_cursor(self) -> None:
         if self._cursor_item is not None:
-            self._scene.removeItem(self._cursor_item)
+            for item in self._cursor_item:
+                self._scene.removeItem(item)
             self._cursor_item = None
