@@ -59,6 +59,11 @@ from bytemark.ui.overlays.segmentation_overlay import SegmentationOverlay
 from bytemark.utils.image import load_image_rgb, numpy_to_qpixmap
 
 
+def _to_scene(view: QGraphicsView, event: QMouseEvent) -> QPointF:
+    """Convert mouse event position to scene coordinates safely."""
+    return view.mapToScene(event.position().toPoint())
+
+
 class _ImageLoader(QObject):
     loaded = Signal(object, int, int)
     failed = Signal()
@@ -119,7 +124,7 @@ class AnnotationCanvas(QFrame):
         self._bbox_drag_scene_orig: Optional[QPointF] = None
 
         self._panning = False
-        self._pan_origin = None
+        self._pan_origin: Optional[QPointF] = None
 
         self._bbox_tool: Optional[BBoxTool] = None
         self._kpt_tool: Optional[KeypointTool] = None
@@ -174,7 +179,7 @@ class AnnotationCanvas(QFrame):
             "image viewer / annotation editor window\n\n"
             "Open a dataset folder to begin.\n\n"
             "• B — bbox  • K — keypoints (bbox first)  • S — segmentation (bbox first)\n"
-            "• Ctrl+S — save  • Ctrl+Z — undo  • Ctrl+Y — auto-annotate\n"
+            "• Ctrl+S — save  • Ctrl+Z — undo  • Ctrl+Shift+A — auto-annotate\n"
             "• A / D or ← / → — previous / next image\n"
             "• Click annotation — isolate & drag points  • Esc — deselect / exit mode\n"
             "• Middle mouse — pan  • Scroll — zoom\n"
@@ -624,6 +629,12 @@ class AnnotationCanvas(QFrame):
         key = event.key()
         mods = event.modifiers()
 
+        # Ctrl+Shift+A — auto-annotate current image
+        if mods == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
+            if key == Qt.Key.Key_A:
+                self.auto_annotate_triggered.emit()
+                return True
+
         if mods == Qt.KeyboardModifier.ControlModifier:
             if key == Qt.Key.Key_S:
                 self._save()
@@ -693,7 +704,7 @@ class AnnotationCanvas(QFrame):
         if event.button() != Qt.MouseButton.LeftButton:
             return False
         if self._active_draw_mode == "seg" and self._seg_tool:
-            scene_pos = self._view.mapToScene(event.position().toPoint())
+            scene_pos = _to_scene(self._view, event)
             if self._seg_tool.double_click(scene_pos):
                 self._remove_seg_preview()
                 return True
@@ -702,12 +713,12 @@ class AnnotationCanvas(QFrame):
     def _handle_mouse_press(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.MiddleButton:
             self._panning = True
-            self._pan_origin = event.position().toPoint()
+            self._pan_origin = event.position()
             return
         if event.button() != Qt.MouseButton.LeftButton:
             return
 
-        scene_pos = self._view.mapToScene(event.position().toPoint())
+        scene_pos = _to_scene(self._view, event)
 
         if self._active_draw_mode == "bbox" and self._bbox_tool:
             self._bbox_tool.mouse_press(scene_pos)
@@ -729,17 +740,17 @@ class AnnotationCanvas(QFrame):
 
     def _handle_mouse_move(self, event: QMouseEvent) -> None:
         if self._panning and self._pan_origin is not None:
-            delta = event.position().toPoint() - self._pan_origin
-            self._pan_origin = event.position().toPoint()
+            delta = event.position() - self._pan_origin
+            self._pan_origin = event.position()
             self._view.horizontalScrollBar().setValue(
-                self._view.horizontalScrollBar().value() - delta.x()
+                self._view.horizontalScrollBar().value() - int(delta.x())
             )
             self._view.verticalScrollBar().setValue(
-                self._view.verticalScrollBar().value() - delta.y()
+                self._view.verticalScrollBar().value() - int(delta.y())
             )
             return
 
-        scene_pos = self._view.mapToScene(event.position().toPoint())
+        scene_pos = _to_scene(self._view, event)
 
         if self._active_draw_mode == "bbox" and self._bbox_tool:
             self._bbox_tool.mouse_move(scene_pos)
@@ -763,7 +774,7 @@ class AnnotationCanvas(QFrame):
         if event.button() != Qt.MouseButton.LeftButton:
             return
 
-        scene_pos = self._view.mapToScene(event.position().toPoint())
+        scene_pos = _to_scene(self._view, event)
 
         if self._active_draw_mode == "bbox" and self._bbox_tool:
             self._bbox_tool.mouse_release(scene_pos)
@@ -796,10 +807,11 @@ class AnnotationCanvas(QFrame):
                         return
                     break
 
+        # Keypoint hit test — zoom-aware radius
         for j, item in enumerate(self._kpt_items):
             if not item.isVisible():
                 continue
-            kpt_idx = item.hit_test_keypoint(scene_pos)
+            kpt_idx = item.hit_test_keypoint(scene_pos, self._zoom)
             if kpt_idx is not None:
                 inst_idx = self._kpt_inst_map[j]
                 self._select_instance(inst_idx)

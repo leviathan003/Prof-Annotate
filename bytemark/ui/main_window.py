@@ -504,12 +504,7 @@ class MainWindow(QMainWindow):
             )
             if dlg.exec() != dlg.DialogCode.Accepted:
                 return
-            output_parent = Path(
-                QFileDialog.getExistingDirectory(self, "Select Output Directory", str(Path.home()))
-            )
-            if not output_parent:
-                return
-            wizard = DatasetWizard([root], output_parent, self)
+            wizard = DatasetWizard([root], root.parent, self)
             wizard.dataset_ready.connect(lambda p: self._open_dataset(Path(p)))
             wizard.exec()
             return
@@ -706,37 +701,16 @@ class MainWindow(QMainWindow):
             self._status_bar.clearMessage()
 
     def _on_create_dataset(self) -> None:
-        folders = []
-        while True:
-            folder = QFileDialog.getExistingDirectory(
-                self, "Select Dataset Directory", str(Path.home())
-            )
-            if not folder:
-                break
-            folders.append(Path(folder))
-            from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
-
-            more = ConfirmDialog(
-                "Another Source Directory?",
-                "Shall we include another source directory in this dataset, Annotator? "
-                "Multiple sources will be merged with random mixing.",
-                "> Yes, add another",
-                "No, proceed with these",
-                self,
-            )
-            if more.exec() != more.DialogCode.Accepted:
-                break
-
-        if not folders:
-            return
-
-        output_parent = Path(
-            QFileDialog.getExistingDirectory(self, "Select Output Directory", str(Path.home()))
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Dataset Directory", str(Path.home())
         )
-        if not output_parent:
+        if not folder:
             return
 
-        wizard = DatasetWizard(folders, output_parent, self)
+        source = Path(folder)
+        output_parent = source.parent
+
+        wizard = DatasetWizard([source], output_parent, self)
         wizard.dataset_ready.connect(lambda p: self._open_dataset(Path(p)))
         wizard.exec()
 

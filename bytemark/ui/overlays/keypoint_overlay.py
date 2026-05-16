@@ -119,12 +119,13 @@ class KeypointOverlay(QGraphicsItem):
         self._selected_kpt = idx
         self.update()
 
-    def hit_test_keypoint(self, scene_pos: QPointF) -> int | None:
+    def hit_test_keypoint(self, scene_pos: QPointF, zoom: float = 1.0) -> int | None:
+        radius = KEYPOINT_SNAP_RADIUS_PX / max(0.01, zoom)
         for i, kp in enumerate(self._keypoints):
             if not _kpt_visible(kp):
                 continue
             dx = scene_pos.x() - kp.x * self._img_w
             dy = scene_pos.y() - kp.y * self._img_h
-            if (dx * dx + dy * dy) ** 0.5 <= KEYPOINT_SNAP_RADIUS_PX:
+            if (dx * dx + dy * dy) ** 0.5 <= radius:
                 return i
         return None

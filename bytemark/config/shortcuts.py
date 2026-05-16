@@ -31,13 +31,18 @@ TOGGLE_BBOX_VISIBILITY = QKeySequence("Ctrl+1")
 TOGGLE_KEYPOINT_VISIBILITY = QKeySequence("Ctrl+2")
 TOGGLE_SEGMENTATION_VISIBILITY = QKeySequence("Ctrl+3")
 
+AUTOANNOTATE_HUMAN_WARNING = (
+    "Auto-annotations are currently optimised for human subjects only.\n"
+    "A generic multi-class model is coming soon — patience, Annotator."
+)
+
 SHORTCUT_LABELS: dict[str, str] = {
     "Draw BBox": "B",
     "Draw Keypoints": "K",
     "Draw Segmentation": "S",
     "Save Annotation": "Ctrl+S",
     "Undo": "Ctrl+Z",
-    "Auto-annotate Image": "Ctrl+Y",
+    "Auto-annotate Image": "Ctrl+Shift+A",
     "Delete Selected Point": "Del",
     "Nudge Point": "Arrow Keys",
     "Next Image": "D",

@@ -20,11 +20,9 @@ from bytemark.ui.dialogs.modality_prompt import ModalityPrompt
 
 
 class AutoAnnotatePrompt(ModalityPrompt):
-    """Single-image auto-annotate dialog — reuses ModalityPrompt."""
-
     def __init__(self, parent=None) -> None:
         super().__init__(
-            title="Auto-Annotate This Image",
+            title="Auto-Annotate This Image, Annotator.",
             show_warning=True,
             parent=parent,
         )
