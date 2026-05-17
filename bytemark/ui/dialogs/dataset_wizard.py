@@ -1,10 +1,12 @@
 """
 bytemark/ui/dialogs/dataset_wizard.py
-Multi-step dataset creation wizard.
+Multi-step dataset creation wizard — single or multi-source.
 """
 
 from __future__ import annotations
 
+import random
+import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -18,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -25,6 +28,49 @@ from PySide6.QtWidgets import (
 
 from bytemark.config.constants import AUTOANNOTATE_HUMAN_WARNING
 from bytemark.core.annotation.models import Modality
+
+# ── Source analysis ───────────────────────────────────────────────────────────
+
+
+def _analyze_source(path: Path) -> dict:
+    from bytemark.config.constants import (
+        YOLO_IMAGE_EXTS,
+        YOLO_IMAGES_SUBDIR,
+        YOLO_LABEL_EXT,
+        YOLO_LABELS_SUBDIR,
+        YOLO_TRAIN_DIR,
+        YOLO_VAL_DIR,
+    )
+
+    images_dir = path / YOLO_IMAGES_SUBDIR
+    labels_dir = path / YOLO_LABELS_SUBDIR
+    is_structured = images_dir.exists() and (
+        (images_dir / YOLO_TRAIN_DIR).exists() or (images_dir / YOLO_VAL_DIR).exists()
+    )
+    image_count = sum(
+        1 for p in path.rglob("*") if p.is_file() and p.suffix.lower() in YOLO_IMAGE_EXTS
+    )
+    if labels_dir.exists():
+        label_count = sum(1 for p in labels_dir.rglob(f"*{YOLO_LABEL_EXT}") if p.is_file())
+    else:
+        label_count = sum(1 for p in path.rglob(f"*{YOLO_LABEL_EXT}") if p.is_file())
+    return {
+        "path": path,
+        "name": path.name,
+        "is_structured": is_structured,
+        "has_labels": label_count > 0,
+        "image_count": image_count,
+        "label_count": label_count,
+    }
+
+
+def _make_dest_name(sources: list[Path]) -> str:
+    names = "_".join(s.name for s in sources)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"{names}_{ts}"
+
+
+# ── Worker ────────────────────────────────────────────────────────────────────
 
 
 class _DatasetWorker(QObject):
@@ -34,13 +80,17 @@ class _DatasetWorker(QObject):
     def __init__(
         self,
         sources: list[Path],
+        source_infos: list[dict],
+        label_decisions: dict,
         output_parent: Path,
         train_ratio: float,
         auto_annotate: bool,
-        modalities: set[Modality],
+        modalities: set,
     ) -> None:
         super().__init__()
         self._sources = sources
+        self._source_infos = source_infos
+        self._label_decisions = label_decisions
         self._output_parent = output_parent
         self._train_ratio = train_ratio
         self._auto_annotate = auto_annotate
@@ -53,36 +103,103 @@ class _DatasetWorker(QObject):
             self.finished.emit(False, str(exc))
 
     def _execute(self) -> None:
-        from bytemark.core.dataset.merger import merge_datasets
-        from bytemark.core.dataset.validator import reshuffle_into_yolo_format
+        from bytemark.config.constants import (
+            YOLO_IMAGE_EXTS,
+            YOLO_IMAGES_SUBDIR,
+            YOLO_LABEL_EXT,
+            YOLO_LABELS_SUBDIR,
+            YOLO_TRAIN_DIR,
+            YOLO_VAL_DIR,
+        )
         from bytemark.core.dataset.yaml_handler import generate_yaml
 
-        self.log_line.emit("Validating source datasets...", "active")
+        dest_name = _make_dest_name(self._sources)
+        dest = self._output_parent / dest_name
 
-        if len(self._sources) == 2:
-            self.log_line.emit("Merging datasets with random mixing...", "active")
-            dest = merge_datasets(
-                self._sources[0], self._sources[1], self._output_parent, self._train_ratio
-            )
-        else:
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            dest = self._output_parent / f"{self._sources[0].name}_{ts}"
-            reshuffle_into_yolo_format(self._sources[0], dest, self._train_ratio)
+        self.log_line.emit("Analysing source dataset(s)...", "active")
 
-        self.log_line.emit("Source data validated and restructured...", "done")
-        self.log_line.emit("Running final dataset validation...", "active")
-        self.log_line.emit("Dataset structure confirmed clean...", "done")
+        pairs: list[tuple[Path, Optional[Path]]] = []
+        for info in self._source_infos:
+            src = info["path"]
+            keep = self._label_decisions.get(str(src), True)
+            images = [
+                p for p in src.rglob("*") if p.is_file() and p.suffix.lower() in YOLO_IMAGE_EXTS
+            ]
+            for img in images:
+                lbl = None
+                if keep:
+                    lbl = self._find_label(img, src)
+                    if lbl and not lbl.exists():
+                        lbl = None
+                pairs.append((img, lbl))
 
-        self.log_line.emit("Initiating modality labelling...", "active")
+        if not pairs:
+            raise ValueError("No images found in the selected source(s).")
+
+        self.log_line.emit(
+            f"Found {len(pairs)} image(s) across {len(self._sources)} source(s) — shuffling...",
+            "done",
+        )
+        self.log_line.emit("Splitting into train / val...", "active")
+
+        rng = random.Random()
+        rng.shuffle(pairs)
+        split_idx = max(1, int(len(pairs) * self._train_ratio))
+        splits = {
+            YOLO_TRAIN_DIR: pairs[:split_idx],
+            YOLO_VAL_DIR: pairs[split_idx:],
+        }
+
+        seen: set[str] = set()
+        for split_name, split_pairs in splits.items():
+            img_out = dest / YOLO_IMAGES_SUBDIR / split_name
+            lbl_out = dest / YOLO_LABELS_SUBDIR / split_name
+            img_out.mkdir(parents=True, exist_ok=True)
+            lbl_out.mkdir(parents=True, exist_ok=True)
+
+            for img_path, lbl_path in split_pairs:
+                stem = img_path.stem
+                if stem in seen:
+                    stem = f"{img_path.parent.name}_{stem}"
+                base = stem
+                counter = 1
+                while stem in seen:
+                    stem = f"{base}_{counter}"
+                    counter += 1
+                seen.add(stem)
+
+                shutil.copy2(img_path, img_out / (stem + img_path.suffix))
+                if lbl_path and lbl_path.exists():
+                    shutil.copy2(lbl_path, lbl_out / (stem + YOLO_LABEL_EXT))
+
+        self.log_line.emit("Train / val split complete...", "done")
+
         if self._auto_annotate and self._modalities:
+            self.log_line.emit("Running auto-annotation...", "active")
             self._run_auto_annotate(dest)
-        self.log_line.emit("Modality labelling complete...", "done")
+            self.log_line.emit("Auto-annotation complete...", "done")
 
         self.log_line.emit("Generating data.yaml and finalising...", "active")
         generate_yaml(dest)
-        self.log_line.emit("All done. Dataset is clean and ready to load...", "done")
-
+        self.log_line.emit("All done. Dataset is clean and ready to load, Annotator.", "done")
         self.finished.emit(True, str(dest))
+
+    def _find_label(self, img: Path, src: Path) -> Optional[Path]:
+        from bytemark.config.constants import (
+            YOLO_IMAGES_SUBDIR,
+            YOLO_LABEL_EXT,
+            YOLO_LABELS_SUBDIR,
+        )
+
+        try:
+            parts = list(img.relative_to(src).parts)
+            for i, p in enumerate(parts):
+                if p.lower() == YOLO_IMAGES_SUBDIR:
+                    parts[i] = YOLO_LABELS_SUBDIR
+                    return (src / Path(*parts)).with_suffix(YOLO_LABEL_EXT)
+        except Exception:
+            pass
+        return img.with_suffix(YOLO_LABEL_EXT)
 
     def _run_auto_annotate(self, dest: Path) -> None:
         from bytemark.config.constants import YOLO_IMAGE_EXTS
@@ -98,6 +215,9 @@ class _DatasetWorker(QObject):
         for img_path in dest.rglob("*"):
             if img_path.suffix.lower() not in YOLO_IMAGE_EXTS:
                 continue
+            lbl_path = derive_label_path(img_path)
+            if lbl_path.exists() and lbl_path.stat().st_size > 0:
+                continue  # already labelled — skip
             rgb = load_image_rgb(img_path)
             if rgb is None:
                 continue
@@ -108,9 +228,10 @@ class _DatasetWorker(QObject):
             raw = engine.run(rgb)
             anns = postprocess(raw, w, h)
             filtered = filter_by_modality(anns, self._modalities)
-            lbl_path = derive_label_path(img_path)
             img_ann = ImageAnnotations(
-                image_path=str(img_path), label_path=str(lbl_path), instances=filtered
+                image_path=str(img_path),
+                label_path=str(lbl_path),
+                instances=filtered,
             )
             write_label_file(img_ann)
         engine.unload()
@@ -123,7 +244,7 @@ class _Page(QFrame):
     def __init__(self) -> None:
         super().__init__()
         self.setObjectName("overlay_dialog")
-        self.setFixedWidth(560)
+        self.setFixedWidth(580)
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(32, 28, 32, 28)
         self._layout.setSpacing(16)
@@ -149,29 +270,97 @@ class _Page(QFrame):
         return row
 
 
-# ── Wizard pages ──────────────────────────────────────────────────────────────
+# ── Label handling page (multi-source only) ───────────────────────────────────
 
 
-class _MergePage(_Page):
-    merge_yes = Signal()
-    merge_no = Signal()
+class _LabelHandlingPage(_Page):
+    proceeded = Signal(dict)
+    cancelled = Signal()
 
-    def __init__(self) -> None:
+    def __init__(self, source_infos: list[dict]) -> None:
         super().__init__()
-        self._layout.addWidget(self._title("One Moment, Annotator."))
-        self._layout.addWidget(
-            self._body(
-                "I notice you have selected more than one source directory. "
-                "Shall I merge them into a single dataset with random mixing? "
-                "This is generally the wiser approach for training stability and generalisation."
+        self._infos = source_infos
+        self._checks: dict[str, QCheckBox] = {}
+        self._build()
+
+    def _build(self) -> None:
+        self._layout.addWidget(self._title("Label Handling, Annotator"))
+
+        any_labels = any(i["has_labels"] for i in self._infos)
+        all_labeled = all(i["has_labels"] for i in self._infos)
+
+        if not any_labels:
+            summary = (
+                "None of the selected sources carry annotation files — "
+                "all will contribute images only. Nothing to decide here, Annotator."
             )
-        )
-        yes = QPushButton("> Yes, merge them")
-        yes.setObjectName("primary_button")
-        yes.clicked.connect(self.merge_yes)
-        no = QPushButton("No, treat separately")
-        no.clicked.connect(self.merge_no)
-        self._layout.addLayout(self._btn_row(yes, no))
+        elif any_labels and not all_labeled:
+            summary = (
+                "A mixed situation, Annotator — some sources carry annotations, "
+                "some do not.\n\n"
+                "Decide below which labels to carry into the merged dataset. "
+                "Sources without labels will contribute images only."
+            )
+        else:
+            summary = (
+                "All sources carry annotations. Decide which labels to keep, "
+                "Annotator — deselecting a source discards its annotations "
+                "while still including its images."
+            )
+        self._layout.addWidget(self._body(summary))
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFixedHeight(min(40 + 58 * len(self._infos), 240))
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setSpacing(10)
+
+        for info in self._infos:
+            key = str(info["path"])
+            has_lbl = info["has_labels"]
+
+            row_widget = QWidget()
+            row = QHBoxLayout(row_widget)
+            row.setContentsMargins(0, 0, 0, 0)
+
+            cb = QCheckBox(f"  {info['name']}")
+            cb.setChecked(has_lbl)
+            cb.setEnabled(has_lbl)
+
+            parts = [f"{info['image_count']} images"]
+            if has_lbl:
+                parts += [
+                    f"{info['label_count']} labels",
+                    "structured" if info["is_structured"] else "flat",
+                ]
+            else:
+                parts.append("no labels")
+            detail = QLabel("  ·  ".join(parts))
+            detail.setObjectName("dimmed")
+
+            row.addWidget(cb)
+            row.addStretch()
+            row.addWidget(detail)
+            inner_layout.addWidget(row_widget)
+            self._checks[key] = cb
+
+        scroll.setWidget(inner)
+        self._layout.addWidget(scroll)
+
+        ok = QPushButton("> Proceed with these choices")
+        ok.setObjectName("primary_button")
+        ok.clicked.connect(self._on_ok)
+        cancel = QPushButton("Cancel")
+        cancel.clicked.connect(self.cancelled)
+        self._layout.addLayout(self._btn_row(ok, cancel))
+
+    def _on_ok(self) -> None:
+        self.proceeded.emit({k: cb.isChecked() for k, cb in self._checks.items()})
+
+
+# ── Auto / manual page ────────────────────────────────────────────────────────
 
 
 class _AutoManualPage(_Page):
@@ -184,8 +373,9 @@ class _AutoManualPage(_Page):
         self._layout.addWidget(
             self._body(
                 "The auto-annotator can handle the laborious groundwork, Annotator, "
-                "leaving you to review and refine — a sensible division of labour. "
-                "Note that the current model is optimised for human subjects only.\n\n"
+                "leaving you to review and refine — a sensible division of labour.\n\n"
+                "Note that the current model is optimised for human subjects only. "
+                "Already-labelled images will not be overwritten.\n\n"
                 "Which path shall we take?"
             )
         )
@@ -195,6 +385,9 @@ class _AutoManualPage(_Page):
         manual_btn = QPushButton("I will annotate manually")
         manual_btn.clicked.connect(self.manual_chosen)
         self._layout.addLayout(self._btn_row(auto_btn, manual_btn))
+
+
+# ── Modality page ─────────────────────────────────────────────────────────────
 
 
 class _ModalityPage(_Page):
@@ -239,6 +432,9 @@ class _ModalityPage(_Page):
         self._layout.addLayout(self._btn_row(ok, cancel))
 
 
+# ── Split page ────────────────────────────────────────────────────────────────
+
+
 class _SplitPage(_Page):
     proceeded = Signal(float)
     cancelled = Signal()
@@ -256,6 +452,7 @@ class _SplitPage(_Page):
         )
 
         row = QHBoxLayout()
+
         train_col = QVBoxLayout()
         train_col.addWidget(QLabel("> Train %:"))
         self._train = QLineEdit("80")
@@ -272,6 +469,7 @@ class _SplitPage(_Page):
         self._val.setFixedWidth(60)
         val_col.addWidget(self._val)
         row.addLayout(val_col)
+
         self._layout.addLayout(row)
 
         self._err = QLabel("")
@@ -301,6 +499,9 @@ class _SplitPage(_Page):
             self._err.setText("Please enter a value between 1 and 99, Annotator.")
 
 
+# ── Confirm page ──────────────────────────────────────────────────────────────
+
+
 class _ConfirmPage(_Page):
     confirmed = Signal()
     cancelled = Signal()
@@ -322,6 +523,9 @@ class _ConfirmPage(_Page):
 
     def set_details(self, details: str) -> None:
         self._body_lbl.setText(details)
+
+
+# ── Execution page ────────────────────────────────────────────────────────────
 
 
 class _ExecutionPage(_Page):
@@ -366,14 +570,27 @@ class _ExecutionPage(_Page):
 class DatasetWizard(QDialog):
     dataset_ready = Signal(str)
 
+    _PAGE_LABELS = 0
+    _PAGE_AUTO = 1
+    _PAGE_MOD = 2
+    _PAGE_SPLIT = 3
+    _PAGE_CONFIRM = 4
+    _PAGE_EXEC = 5
+
     def __init__(self, sources: list[Path], output_parent: Path, parent=None) -> None:
         super().__init__(parent, Qt.WindowType.FramelessWindowHint)
         self.setModal(True)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-        self.setMinimumWidth(620)
+        self.setMinimumWidth(640)
 
         self._sources = sources
         self._output_parent = output_parent
+        self._source_infos: list[dict] = [_analyze_source(s) for s in sources]
+
+        # Default: keep labels wherever they exist
+        self._label_decisions: dict[str, bool] = {
+            str(i["path"]): i["has_labels"] for i in self._source_infos
+        }
         self._train_ratio = 0.8
         self._auto_annotate = False
         self._modalities: set[Modality] = set()
@@ -385,7 +602,18 @@ class DatasetWizard(QDialog):
         self._stack = QStackedWidget()
         outer.addWidget(self._stack, alignment=Qt.AlignmentFlag.AlignCenter)
 
-        self._merge_page = _MergePage()
+        multi = len(sources) > 1
+        any_labels = any(i["has_labels"] for i in self._source_infos)
+        self._show_label_page = multi and any_labels
+
+        # Build pages — label page is real only when needed
+        if self._show_label_page:
+            self._label_page = _LabelHandlingPage(self._source_infos)
+            self._label_page.proceeded.connect(self._on_label_decisions)
+            self._label_page.cancelled.connect(self.reject)
+        else:
+            self._label_page = _Page()  # inert placeholder
+
         self._auto_page = _AutoManualPage()
         self._modality_page = _ModalityPage()
         self._split_page = _SplitPage()
@@ -393,7 +621,7 @@ class DatasetWizard(QDialog):
         self._exec_page = _ExecutionPage()
 
         for page in (
-            self._merge_page,
+            self._label_page,
             self._auto_page,
             self._modality_page,
             self._split_page,
@@ -402,8 +630,6 @@ class DatasetWizard(QDialog):
         ):
             self._stack.addWidget(page)
 
-        self._merge_page.merge_yes.connect(lambda: self._goto(1))
-        self._merge_page.merge_no.connect(lambda: self._goto(1))
         self._auto_page.auto_chosen.connect(self._on_auto)
         self._auto_page.manual_chosen.connect(self._on_manual)
         self._modality_page.proceeded.connect(self._on_modalities)
@@ -413,44 +639,73 @@ class DatasetWizard(QDialog):
         self._confirm_page.confirmed.connect(self._start_execution)
         self._confirm_page.cancelled.connect(self.reject)
 
-        self._stack.setCurrentIndex(0 if len(sources) > 1 else 1)
+        start = self._PAGE_LABELS if self._show_label_page else self._PAGE_AUTO
+        self._stack.setCurrentIndex(start)
 
     def _goto(self, idx: int) -> None:
         self._stack.setCurrentIndex(idx)
 
+    def _on_label_decisions(self, decisions: dict) -> None:
+        self._label_decisions = decisions
+        self._goto(self._PAGE_AUTO)
+
     def _on_auto(self) -> None:
         self._auto_annotate = True
-        self._goto(2)
+        self._goto(self._PAGE_MOD)
 
     def _on_manual(self) -> None:
         self._auto_annotate = False
-        self._goto(3)
+        self._modalities = set()
+        self._goto(self._PAGE_SPLIT)
 
-    def _on_modalities(self, mods: set[Modality]) -> None:
+    def _on_modalities(self, mods: set) -> None:
         self._modalities = mods
-        self._goto(3)
+        self._goto(self._PAGE_SPLIT)
 
     def _on_split(self, ratio: float) -> None:
         self._train_ratio = ratio
-        details = (
-            f"Source(s): {', '.join(s.name for s in self._sources)}\n"
-            f"Auto-annotation: {'enabled' if self._auto_annotate else 'disabled'}\n"
-            f"Modalities: {', '.join(m.name for m in self._modalities) or 'none'}\n"
+
+        keeping = [
+            info["name"]
+            for info in self._source_infos
+            if self._label_decisions.get(str(info["path"]), False)
+        ]
+        discarding = [
+            info["name"]
+            for info in self._source_infos
+            if not self._label_decisions.get(str(info["path"]), False)
+        ]
+
+        lines = [
+            f"Source(s): {', '.join(s.name for s in self._sources)}",
+            f"Auto-annotation: {'enabled' if self._auto_annotate else 'disabled'}",
+        ]
+        if self._auto_annotate and self._modalities:
+            lines.append(f"Modalities: {', '.join(m.name for m in self._modalities)}")
+        if keeping:
+            lines.append(f"Labels kept from: {', '.join(keeping)}")
+        if discarding:
+            lines.append(f"Labels discarded from: {', '.join(discarding)}")
+        lines.append(
             f"Train / Val split: "
             f"{int(self._train_ratio * 100)} / {int((1 - self._train_ratio) * 100)}"
         )
-        self._confirm_page.set_details(details)
-        self._goto(4)
+        lines.append(f"Output naming: {' + '.join(s.name for s in self._sources)}_<timestamp>")
+
+        self._confirm_page.set_details("\n".join(lines))
+        self._goto(self._PAGE_CONFIRM)
 
     def _start_execution(self) -> None:
-        self._goto(5)
+        self._goto(self._PAGE_EXEC)
         self._thread = QThread()
         self._worker = _DatasetWorker(
-            self._sources,
-            self._output_parent,
-            self._train_ratio,
-            self._auto_annotate,
-            self._modalities,
+            sources=self._sources,
+            source_infos=self._source_infos,
+            label_decisions=self._label_decisions,
+            output_parent=self._output_parent,
+            train_ratio=self._train_ratio,
+            auto_annotate=self._auto_annotate,
+            modalities=self._modalities,
         )
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.run)

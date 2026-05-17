@@ -103,10 +103,11 @@ class SegmentationOverlay(QGraphicsItem):
         self._is_drawing = drawing
         self.update()
 
-    def hit_test_point(self, scene_pos: QPointF) -> int | None:
+    def hit_test_point(self, scene_pos: QPointF, zoom: float = 1.0) -> int | None:
+        radius = POLYGON_CLOSE_RADIUS_PX / max(0.01, zoom)
         for i, (x, y) in enumerate(self._mask.points):
             dx = scene_pos.x() - x * self._img_w
             dy = scene_pos.y() - y * self._img_h
-            if (dx * dx + dy * dy) ** 0.5 <= POLYGON_CLOSE_RADIUS_PX:
+            if (dx * dx + dy * dy) ** 0.5 <= radius:
                 return i
         return None

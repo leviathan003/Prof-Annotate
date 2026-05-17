@@ -807,7 +807,6 @@ class AnnotationCanvas(QFrame):
                         return
                     break
 
-        # Keypoint hit test — zoom-aware radius
         for j, item in enumerate(self._kpt_items):
             if not item.isVisible():
                 continue
@@ -827,7 +826,7 @@ class AnnotationCanvas(QFrame):
         for j, item in enumerate(self._seg_items):
             if not item.isVisible():
                 continue
-            pt_idx = item.hit_test_point(scene_pos)
+            pt_idx = item.hit_test_point(scene_pos, self._zoom)
             if pt_idx is not None:
                 inst_idx = self._seg_inst_map[j]
                 self._select_instance(inst_idx)

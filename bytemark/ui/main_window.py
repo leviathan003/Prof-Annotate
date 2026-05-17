@@ -701,16 +701,34 @@ class MainWindow(QMainWindow):
             self._status_bar.clearMessage()
 
     def _on_create_dataset(self) -> None:
-        folder = QFileDialog.getExistingDirectory(
-            self, "Select Dataset Directory", str(Path.home())
-        )
-        if not folder:
+        from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
+
+        folders: list[Path] = []
+
+        first = QFileDialog.getExistingDirectory(self, "Select Dataset Directory", str(Path.home()))
+        if not first:
             return
+        folders.append(Path(first))
 
-        source = Path(folder)
-        output_parent = source.parent
+        while True:
+            dlg = ConfirmDialog(
+                "Add Another Source?",
+                f"You have selected {len(folders)} source(s) so far.\n\n"
+                "Shall we include another source directory, Annotator? "
+                "Multiple sources will be randomly mixed into a single dataset.",
+                "> Yes, add another source",
+                "No, proceed with these",
+                self,
+            )
+            if dlg.exec() != dlg.DialogCode.Accepted:
+                break
+            extra = QFileDialog.getExistingDirectory(
+                self, "Select Additional Dataset Directory", str(Path.home())
+            )
+            if extra:
+                folders.append(Path(extra))
 
-        wizard = DatasetWizard([source], output_parent, self)
+        wizard = DatasetWizard(folders, folders[0].parent, self)
         wizard.dataset_ready.connect(lambda p: self._open_dataset(Path(p)))
         wizard.exec()
 
