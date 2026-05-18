@@ -1,12 +1,15 @@
 """
 bytemark/core/inference/engine.py
-ONNX Runtime wrapper. GPU auto-detect. Load/unload lifecycle.
-Never called from UI thread.
+ONNX Runtime wrapper. GPU auto-detect with clean CPU fallback.
+Load/unload lifecycle. Never called from UI thread.
 """
 
 from __future__ import annotations
 
+import contextlib
+import io
 import logging
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -14,26 +17,44 @@ import numpy as np
 
 from bytemark.config.constants import (
     MODEL_INPUT_SIZE,
-    NUM_KEYPOINTS,
     ONNX_MODEL_PATH,
     ONNX_PROVIDERS_PRIORITY,
 )
 
 logger = logging.getLogger(__name__)
 
+os.environ.setdefault("ORT_LOGGING_LEVEL", "3")
+os.environ.setdefault("ORT_DISABLE_ALL_LOGS", "1")
 
-def resolve_providers() -> list[str]:
+
+@contextlib.contextmanager
+def _suppress_stderr():
+    """Redirect C-level stderr to /dev/null for noisy native library output."""
+    import sys
+
+    devnull = open(os.devnull, "w")
+    old_stderr = sys.stderr
+    old_stderr_fd = os.dup(2)
     try:
-        import onnxruntime as ort
+        sys.stderr = devnull
+        os.dup2(devnull.fileno(), 2)
+        yield
+    finally:
+        os.dup2(old_stderr_fd, 2)
+        os.close(old_stderr_fd)
+        sys.stderr = old_stderr
+        devnull.close()
 
-        available = ort.get_available_providers()
-        chosen = [p for p in ONNX_PROVIDERS_PRIORITY if p in available]
-        if not chosen:
-            chosen = ["CPUExecutionProvider"]
-        logger.info("ONNX providers: %s", chosen)
-        return chosen
-    except ImportError:
-        return ["CPUExecutionProvider"]
+
+def _make_session_opts():
+    import onnxruntime as ort
+
+    opts = ort.SessionOptions()
+    opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    opts.intra_op_num_threads = 0
+    opts.inter_op_num_threads = 0
+    opts.log_severity_level = 3
+    return opts
 
 
 class InferenceEngine:
@@ -41,6 +62,7 @@ class InferenceEngine:
         self._model_path = Path(model_path)
         self._session = None
         self._input_name: Optional[str] = None
+        self._active_provider: Optional[str] = None
 
     def load(self) -> None:
         if self._session is not None:
@@ -50,27 +72,54 @@ class InferenceEngine:
 
         import onnxruntime as ort
 
-        opts = ort.SessionOptions()
-        opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        opts.intra_op_num_threads = 0
-        opts.inter_op_num_threads = 0
+        # Build candidate provider lists in priority order, always ending with CPU
+        with _suppress_stderr():
+            available = set(ort.get_available_providers())
 
-        self._session = ort.InferenceSession(
-            str(self._model_path),
-            sess_options=opts,
-            providers=resolve_providers(),
-        )
-        self._input_name = self._session.get_inputs()[0].name
-        logger.info("Model loaded: %s", self._model_path)
+        candidates = [
+            p for p in ONNX_PROVIDERS_PRIORITY if p in available and p != "CPUExecutionProvider"
+        ]
+
+        # Try hardware providers first, then pure CPU — first success wins
+        attempts = [[p, "CPUExecutionProvider"] for p in candidates] + [["CPUExecutionProvider"]]
+
+        last_exc = None
+        for provider_list in attempts:
+            try:
+                with _suppress_stderr():
+                    session = ort.InferenceSession(
+                        str(self._model_path),
+                        sess_options=_make_session_opts(),
+                        providers=provider_list,
+                    )
+                self._session = session
+                self._input_name = session.get_inputs()[0].name
+                self._active_provider = session.get_providers()[0]
+                logger.info(
+                    "Model loaded: %s | provider: %s",
+                    self._model_path.name,
+                    self._active_provider,
+                )
+                return
+            except Exception as exc:
+                last_exc = exc
+                logger.debug("Provider list %s failed: %s — trying next.", provider_list, exc)
+
+        raise RuntimeError(f"Failed to load model on any provider: {last_exc}") from last_exc
 
     def unload(self) -> None:
         self._session = None
         self._input_name = None
+        self._active_provider = None
         logger.info("Model unloaded.")
 
     @property
     def is_loaded(self) -> bool:
         return self._session is not None
+
+    @property
+    def active_provider(self) -> Optional[str]:
+        return self._active_provider
 
     def run(self, image_rgb: np.ndarray) -> dict:
         if not self.is_loaded:

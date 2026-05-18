@@ -63,7 +63,39 @@ from bytemark.ui.widgets.status_bar import StatusBar
 from bytemark.ui.widgets.yaml_editor import YamlEditor
 from bytemark.utils.logger import setup_logging
 
+
 # ── Background workers ────────────────────────────────────────────────────────
+class _SingleAutoAnnotateWorker(QObject):
+    done = Signal(list)
+    failed = Signal(str)
+
+    def __init__(self, entry, modalities: set) -> None:
+        super().__init__()
+        self._entry = entry
+        self._modalities = modalities
+
+    def run(self) -> None:
+        try:
+            from bytemark.core.inference.engine import InferenceEngine
+            from bytemark.core.inference.filter import filter_by_modality
+            from bytemark.core.inference.postprocess import postprocess
+            from bytemark.utils.image import image_dimensions, load_image_rgb
+
+            rgb = load_image_rgb(self._entry.image_path)
+            dims = image_dimensions(self._entry.image_path)
+            if rgb is None or dims is None:
+                self.failed.emit("Could not load image, Annotator.")
+                return
+            w, h = dims
+            engine = InferenceEngine()
+            engine.load()
+            raw = engine.run(rgb)
+            anns = postprocess(raw, w, h)
+            filtered = filter_by_modality(anns, self._modalities)
+            engine.unload()
+            self.done.emit(filtered)
+        except Exception as exc:
+            self.failed.emit(str(exc))
 
 
 class _ReshuffleWorker(QObject):
@@ -748,6 +780,10 @@ class MainWindow(QMainWindow):
         if not entries:
             return
         idx = max(0, min(idx, len(entries) - 1))
+        if idx == self._current_idx and self._current_entry is not None:
+            return
+        # Auto-save current image before switching
+        self._autosave_current()
         self._current_idx = idx
         self._current_entry = entries[idx]
         self._canvas.set_nav_label(idx + 1, len(entries))
@@ -781,14 +817,41 @@ class MainWindow(QMainWindow):
             save_session(self._dataset_root, self._dirty_map)
 
     def _on_save(self, ann: ImageAnnotations) -> None:
+        has_label = len(ann.instances) > 0
         self._dirty_map.pop(ann.image_path, None)
         if self._current_entry:
-            self._file_explorer.mark_saved(str(self._current_entry.image_path))
+            self._file_explorer.mark_saved(str(self._current_entry.image_path), has_label=has_label)
         if not self._dirty_map and self._dataset_root:
             clear_session(self._dataset_root)
         self._stats_panel.set_index(self._dataset_index)
         if self._json_editor._selected_idx is not None:
             self._json_editor._refresh_display(force=True)
+
+    # ── AutoSave Helper ───────────────────────────────────────────────────────────
+
+    def _autosave_current(self) -> None:
+        """Write dirty annotations for the current image to disk silently."""
+        if self._current_entry is None:
+            return
+        if self._canvas._annotations is None:
+            return
+        if not self._canvas._dirty:
+            return
+        from bytemark.core.annotation.writer import write_label_file
+
+        ann = self._canvas._annotations
+        write_label_file(ann)
+        self._canvas._dirty = False
+        self._canvas._undo.clear()
+        self._canvas._update_border()
+        # Reflect saved state in explorer
+        has_label = len(ann.instances) > 0
+        self._file_explorer.mark_saved(str(self._current_entry.image_path), has_label=has_label)
+        self._dirty_map.pop(ann.image_path, None)
+        if not self._dirty_map and self._dataset_root:
+            clear_session(self._dataset_root)
+        self._stats_panel.set_index(self._dataset_index)
+        self._status_bar.showMessage(f"✓  Auto-saved {self._current_entry.image_path.name}", 2000)
 
     # ── Global undo ───────────────────────────────────────────────────────────
 
@@ -873,58 +936,26 @@ class MainWindow(QMainWindow):
         if not modalities:
             return
 
-        from PySide6.QtCore import QObject, QThread
-        from PySide6.QtCore import Signal as Sig
-
-        from bytemark.core.inference.engine import InferenceEngine
-        from bytemark.core.inference.filter import filter_by_modality
-        from bytemark.core.inference.postprocess import postprocess
-        from bytemark.utils.image import image_dimensions, load_image_rgb
-
-        class _Worker(QObject):
-            done = Sig(list)
-            fail = Sig(str)
-
-            def __init__(self, entry, mods):
-                super().__init__()
-                self._entry = entry
-                self._mods = mods
-
-            def run(self):
-                try:
-                    rgb = load_image_rgb(self._entry.image_path)
-                    dims = image_dimensions(self._entry.image_path)
-                    if rgb is None or dims is None:
-                        self.fail.emit("Could not load image.")
-                        return
-                    w, h = dims
-                    engine = InferenceEngine()
-                    engine.load()
-                    raw = engine.run(rgb)
-                    anns = postprocess(raw, w, h)
-                    filt = filter_by_modality(anns, self._mods)
-                    engine.unload()
-                    self.done.emit(filt)
-                except Exception as e:
-                    self.fail.emit(str(e))
-
+        self._set_loading(True, "Running auto-annotator on current image...")
         self._ai_thread = QThread()
-        self._ai_worker = _Worker(self._current_entry, modalities)
+        self._ai_worker = _SingleAutoAnnotateWorker(self._current_entry, modalities)
         self._ai_worker.moveToThread(self._ai_thread)
         self._ai_thread.started.connect(self._ai_worker.run)
         self._ai_worker.done.connect(self._on_auto_done, Qt.ConnectionType.QueuedConnection)
-        self._ai_worker.fail.connect(
-            lambda msg: ErrorDialog(
-                f"The auto-annotator encountered a problem, Annotator:\n\n{msg}", self
-            ).exec(),
-            Qt.ConnectionType.QueuedConnection,
+        self._ai_worker.failed.connect(
+            self._on_auto_annotate_failed, Qt.ConnectionType.QueuedConnection
         )
         self._ai_worker.done.connect(self._ai_thread.quit)
-        self._ai_worker.fail.connect(self._ai_thread.quit)
+        self._ai_worker.failed.connect(self._ai_thread.quit)
         self._ai_thread.finished.connect(self._ai_thread.deleteLater)
         self._ai_thread.start()
 
+    def _on_auto_annotate_failed(self, msg: str) -> None:
+        self._set_loading(False)
+        ErrorDialog(f"The auto-annotator encountered a problem, Annotator:\n\n{msg}", self).exec()
+
     def _on_auto_done(self, new_annotations: list) -> None:
+        self._set_loading(False)
         if self._canvas._annotations is None:
             return
         old = list(self._canvas._annotations.instances)
@@ -952,6 +983,8 @@ class MainWindow(QMainWindow):
         LAYOUT_FILE.write_text(json.dumps(data))
 
     def closeEvent(self, event) -> None:
+        # Auto-save current image on close
+        self._autosave_current()
         if self._dataset_root and self._dirty_map:
             save_session(self._dataset_root, self._dirty_map)
         self._save_layout()

@@ -21,52 +21,50 @@ from bytemark.core.annotation.models import Annotation, BBox, Keypoint, Segmenta
 
 logger = logging.getLogger(__name__)
 
+NM = 32  # mask coefficients per detection
+NC = 1  # num classes
+
 
 def postprocess(
-    engine_output: dict[str, Any],
-    orig_w: int,
-    orig_h: int,
-    conf_threshold: float = MODEL_CONF_THRESHOLD,
-    iou_threshold: float = MODEL_IOU_THRESHOLD,
-) -> list[Annotation]:
-    """
-    Decode engine raw output into Annotation objects.
-    Coordinates are returned normalized (0.0–1.0) relative to orig_w/orig_h.
-    """
+    engine_output,
+    orig_w,
+    orig_h,
+    conf_threshold=MODEL_CONF_THRESHOLD,
+    iou_threshold=MODEL_IOU_THRESHOLD,
+):
     raw = engine_output["raw"]
-    input_shape = engine_output["input_shape"]  # (1, 3, H, W)
+    input_shape = engine_output["input_shape"]
     input_h, input_w = input_shape[2], input_shape[3]
 
-    # Compute letterbox padding offsets
     scale = min(input_w / orig_w, input_h / orig_h)
     pad_x = (input_w - orig_w * scale) / 2
     pad_y = (input_h - orig_h * scale) / 2
 
-    # YOLO11 output shape: (1, num_preds, 4+1+num_kpts*3) or similar
-    # Adapt indexing to your specific model output format
-    predictions = raw[0]  # (1, N, D) or (N, D)
-    if predictions.ndim == 3:
-        predictions = predictions[0]  # (N, D)
+    # Find the rank-3 combined-head output; shape is (1, C, A) — channel-first
+    combined_raw = next((o for o in raw if o.ndim == 3), raw[0])
+    predictions = combined_raw[0]  # (C, A)
+    # Transpose to (A, C) if channel-first
+    if predictions.shape[0] < predictions.shape[1]:
+        predictions = predictions.T
 
     annotations: list[Annotation] = []
 
-    # Filter by confidence
     scores = predictions[:, 4]
     mask = scores >= conf_threshold
     predictions = predictions[mask]
-
     if len(predictions) == 0:
         return annotations
 
-    # NMS
     boxes_xyxy = _cxcywh_to_xyxy(predictions[:, :4])
     keep = _nms(boxes_xyxy, predictions[:, 4], iou_threshold)
     predictions = predictions[keep]
 
+    kpt_offset = 4 + NC + NM  # 37 for segpose (bbox + class_scores + mask_coeffs)
+    seg_offset = kpt_offset + NUM_KEYPOINTS * 3
+
     for pred in predictions:
         cx, cy, bw, bh = pred[:4]
 
-        # Inverse letterbox → normalized image coords
         def inv_x(px):
             return (px - pad_x) / (scale * orig_w)
 
@@ -81,7 +79,6 @@ def postprocess(
         )
 
         keypoints: list[Keypoint] = []
-        kpt_offset = 5
         for i in range(NUM_KEYPOINTS):
             kx = pred[kpt_offset + i * 3]
             ky = pred[kpt_offset + i * 3 + 1]
@@ -94,9 +91,7 @@ def postprocess(
                 )
             )
 
-        # Segmentation mask (if output contains it)
         mask_out = None
-        seg_offset = kpt_offset + NUM_KEYPOINTS * 3
         if pred.shape[0] > seg_offset + 1:
             seg_vals = pred[seg_offset:]
             if len(seg_vals) >= 6 and len(seg_vals) % 2 == 0:
@@ -109,14 +104,7 @@ def postprocess(
                 ]
                 mask_out = SegmentationMask(points=pts)
 
-        annotations.append(
-            Annotation(
-                class_id=0,
-                bbox=bbox,
-                keypoints=keypoints,
-                mask=mask_out,
-            )
-        )
+        annotations.append(Annotation(class_id=0, bbox=bbox, keypoints=keypoints, mask=mask_out))
 
     return annotations
 

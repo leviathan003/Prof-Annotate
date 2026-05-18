@@ -123,6 +123,8 @@ class AnnotationCanvas(QFrame):
         self._bbox_seg_orig: Optional[SegmentationMask] = None
         self._bbox_drag_scene_orig: Optional[QPointF] = None
 
+        self._violation_active = False
+
         self._panning = False
         self._pan_origin: Optional[QPointF] = None
 
@@ -326,6 +328,9 @@ class AnnotationCanvas(QFrame):
                 self._seg_inst_map.append(i)
 
         self._apply_selection_visibility()
+        if getattr(self, "_violation_active", False):
+            violations = self._validate_annotations()
+            self._mark_violations(violations)
 
     def _apply_selection_visibility(self) -> None:
         sel = self._selected_instance
@@ -398,6 +403,8 @@ class AnnotationCanvas(QFrame):
         QTimer.singleShot(2500, self._clear_warning)
 
     def _clear_warning(self) -> None:
+        if getattr(self, "_violation_active", False):
+            return
         self._draw_mode_label.setStyleSheet("")
         if self._active_draw_mode == "kpts":
             self._update_kpt_mode_label()
@@ -429,9 +436,79 @@ class AnnotationCanvas(QFrame):
         if self._annotations:
             self.annotations_changed.emit(self._annotations)
 
+    def _validate_annotations(self) -> list[int]:
+        """Returns instance indices where any kpt or seg point lies outside the bbox."""
+        if not self._annotations:
+            return []
+        violating: list[int] = []
+        for i, inst in enumerate(self._annotations.instances):
+            if not inst.has_bbox():
+                continue
+            x1, y1, x2, y2 = inst.bbox.to_xyxy(self._img_w, self._img_h)
+            violated = False
+
+            if inst.has_keypoints():
+                for kp in inst.keypoints:
+                    if kp is None or (kp.x == 0 and kp.y == 0 and kp.visibility == 0):
+                        continue
+                    px = kp.x * self._img_w
+                    py = kp.y * self._img_h
+                    if not (x1 <= px <= x2 and y1 <= py <= y2):
+                        violated = True
+                        break
+
+            if not violated and inst.has_mask():
+                for mx, my in inst.mask.points:
+                    px = mx * self._img_w
+                    py = my * self._img_h
+                    if not (x1 <= px <= x2 and y1 <= py <= y2):
+                        violated = True
+                        break
+
+            if violated:
+                violating.append(i)
+        return violating
+
+    def _mark_violations(self, violating_indices: list[int]) -> None:
+        indices_set = set(violating_indices)
+        for j, item in enumerate(self._bbox_items):
+            item.set_violated(self._bbox_inst_map[j] in indices_set)
+
+    def _clear_violations(self) -> None:
+        self._violation_active = False
+        for item in self._bbox_items:
+            item.set_violated(False)
+        # Now safe to let _clear_warning actually clear
+        self._draw_mode_label.setStyleSheet("")
+        if self._active_draw_mode == "kpts":
+            self._update_kpt_mode_label()
+        elif self._active_draw_mode:
+            self._draw_mode_label.setText(f"[ {self._active_draw_mode.upper()} MODE ]")
+        else:
+            self._draw_mode_label.hide()
+
+    def _show_persistent_warning(self, msg: str) -> None:
+        self._violation_active = True
+        self._draw_mode_label.setText(f"⚠  {msg}")
+        self._draw_mode_label.setStyleSheet("color: #FF4444;")
+        self._draw_mode_label.show()
+
     def _save(self) -> None:
         if self._annotations is None:
             return
+
+        violations = self._validate_annotations()
+        if violations:
+            self._mark_violations(violations)
+            count = len(violations)
+            noun = "One entity has" if count == 1 else f"{count} entities have"
+            self._show_persistent_warning(
+                f"{noun} annotation points outside their bounding box, Annotator. "
+                "Correct the violations before we can commit this to disk."
+            )
+            return
+
+        self._clear_violations()
         from bytemark.core.annotation.writer import write_label_file
 
         write_label_file(self._annotations)
@@ -572,15 +649,30 @@ class AnnotationCanvas(QFrame):
         state = self._undo.undo()
         if state is not None:
             self._annotations = state
+
+            # Full interaction state reset — nothing carries over from pre-undo
+            self._selected_instance = None
+            self._selected_kpt_idx = None
+            self._selected_pt_idx = None
+            self._dragging = False
+            self._drag_type = None
+            self._drag_undo_pushed = False
+            self._bbox_drag_handle = HANDLE_NONE
+            self._bbox_drag_orig = None
+            self._bbox_kpts_orig = None
+            self._bbox_seg_orig = None
+            self._bbox_drag_scene_orig = None
+            self._violation_active = False
+
             self._rebuild_overlays()
             self._mark_dirty()
-            if (
-                self._active_draw_mode == "kpts"
-                and self._kpt_tool
-                and self._selected_instance is not None
-                and self._selected_instance < len(self._annotations.instances)
-            ):
-                inst = self._annotations.instances[self._selected_instance]
+            self.instance_deselected.emit()
+
+            # If kpt draw mode was active, resync the tool index to the
+            # first unlabelled keypoint in whatever instance was being edited
+            if self._active_draw_mode == "kpts" and self._kpt_tool and self._annotations.instances:
+                # Pick first instance as best-effort target after undo
+                inst = self._annotations.instances[0]
                 if inst.keypoints:
                     next_idx = next(
                         (
@@ -592,6 +684,7 @@ class AnnotationCanvas(QFrame):
                     )
                     self._kpt_tool._current_idx = next_idx
                     self._update_kpt_mode_label()
+
         if self._active_draw_mode == "seg":
             self._create_seg_preview()
 
@@ -798,15 +891,7 @@ class AnnotationCanvas(QFrame):
         if self._annotations is None:
             return
 
-        if self._selected_instance is not None:
-            for j, item in enumerate(self._bbox_items):
-                if self._bbox_inst_map[j] == self._selected_instance:
-                    handle = item.hit_test_handle(scene_pos)
-                    if handle not in (HANDLE_NONE, HANDLE_MOVE):
-                        self._start_bbox_drag(handle, scene_pos)
-                        return
-                    break
-
+        # ── 1. Keypoints always win — checked first regardless of selection ──────
         for j, item in enumerate(self._kpt_items):
             if not item.isVisible():
                 continue
@@ -823,6 +908,7 @@ class AnnotationCanvas(QFrame):
                 self.instance_selected.emit(self._annotations, inst_idx)
                 return
 
+        # ── 2. Seg points second ─────────────────────────────────────────────────
         for j, item in enumerate(self._seg_items):
             if not item.isVisible():
                 continue
@@ -839,6 +925,17 @@ class AnnotationCanvas(QFrame):
                 self.instance_selected.emit(self._annotations, inst_idx)
                 return
 
+        # ── 3. Bbox resize handles third (only on selected instance) ─────────────
+        if self._selected_instance is not None:
+            for j, item in enumerate(self._bbox_items):
+                if self._bbox_inst_map[j] == self._selected_instance:
+                    handle = item.hit_test_handle(scene_pos)
+                    if handle not in (HANDLE_NONE, HANDLE_MOVE):
+                        self._start_bbox_drag(handle, scene_pos)
+                        return
+                    break
+
+        # ── 4. Bbox move (selected instance interior) ─────────────────────────────
         if self._selected_instance is not None:
             for j, item in enumerate(self._bbox_items):
                 if self._bbox_inst_map[j] == self._selected_instance:
@@ -847,6 +944,7 @@ class AnnotationCanvas(QFrame):
                         return
                     break
 
+        # ── 5. Select a different bbox instance ───────────────────────────────────
         for j, item in enumerate(self._bbox_items):
             if not item.isVisible():
                 continue

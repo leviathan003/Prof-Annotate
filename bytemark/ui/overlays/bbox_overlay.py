@@ -11,7 +11,6 @@ from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 from bytemark.core.annotation.models import BBox
 from bytemark.utils.color import class_color
 
-# Handle constants — imported by canvas.py
 HANDLE_NONE = -1
 HANDLE_MOVE = 0
 HANDLE_TL = 1
@@ -23,8 +22,8 @@ HANDLE_BL = 6
 HANDLE_BC = 7
 HANDLE_BR = 8
 
-_HANDLE_R = 4.5  # visual radius (scene px)
-_HIT_R = 8.0  # hit-test radius
+_HANDLE_R = 4.5
+_HIT_R = 8.0
 
 
 class BBoxOverlay(QGraphicsItem):
@@ -38,6 +37,7 @@ class BBoxOverlay(QGraphicsItem):
         self._class_id = class_id
         self._idx = instance_idx
         self._selected = False
+        self._violated = False
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
         self._update_rect()
@@ -51,42 +51,55 @@ class BBoxOverlay(QGraphicsItem):
         cx = r.x() + r.width() / 2
         cy = r.y() + r.height() / 2
         return [
-            (r.x(), r.y()),  # TL 1
-            (cx, r.y()),  # TC 2
-            (r.x() + r.width(), r.y()),  # TR 3
-            (r.x(), cy),  # ML 4
-            (r.x() + r.width(), cy),  # MR 5
-            (r.x(), r.y() + r.height()),  # BL 6
-            (cx, r.y() + r.height()),  # BC 7
-            (r.x() + r.width(), r.y() + r.height()),  # BR 8
+            (r.x(), r.y()),
+            (cx, r.y()),
+            (r.x() + r.width(), r.y()),
+            (r.x(), cy),
+            (r.x() + r.width(), cy),
+            (r.x(), r.y() + r.height()),
+            (cx, r.y() + r.height()),
+            (r.x() + r.width(), r.y() + r.height()),
         ]
 
     def boundingRect(self) -> QRectF:
         m = _HANDLE_R + 3
         return self._rect.adjusted(-m, -m, m, m)
 
-    def paint(self, painter, option, widget=None):
+    def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget=None) -> None:
         transform = painter.worldTransform()
-        color = class_color(self._class_id)
 
-        pw = 2.0 if self._selected else 1.5
+        if self._violated:
+            color = QColor("#FF4444")
+            pw = 2.5
+            # Flashing fill to draw attention
+            fill = QColor("#FF4444")
+            fill.setAlpha(30)
+            painter.setBrush(QBrush(fill))
+        else:
+            color = class_color(self._class_id)
+            pw = 2.0 if self._selected else 1.5
+            painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+
         pen = QPen(color, pw)
+        if self._violated:
+            pen.setStyle(Qt.PenStyle.DashLine)
         pen.setCosmetic(True)
         painter.setPen(pen)
-        painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
         painter.drawRect(self._rect)
 
-        # Class label — fixed screen size
+        # Class label
         tl_screen = transform.map(QPointF(self._rect.x(), self._rect.y()))
         painter.save()
         painter.resetTransform()
         font = QFont()
         font.setPointSizeF(8.5)
         painter.setFont(font)
-        lp = QPen(color)
+        label_color = QColor("#FF4444") if self._violated else color
+        lp = QPen(label_color)
         lp.setCosmetic(True)
         painter.setPen(lp)
-        painter.drawText(tl_screen + QPointF(2, -4), f"cls:{self._class_id}")
+        label = f"⚠ cls:{self._class_id}" if self._violated else f"cls:{self._class_id}"
+        painter.drawText(tl_screen + QPointF(2, -4), label)
         painter.restore()
 
         if self._selected:
@@ -112,7 +125,6 @@ class BBoxOverlay(QGraphicsItem):
                 painter.restore()
 
     def hit_test_handle(self, scene_pos: QPointF) -> int:
-        """Returns a HANDLE_* constant. Only checks resize handles when selected."""
         if self._selected:
             h_ids = [
                 HANDLE_TL,
@@ -141,4 +153,8 @@ class BBoxOverlay(QGraphicsItem):
 
     def set_selected(self, selected: bool) -> None:
         self._selected = selected
+        self.update()
+
+    def set_violated(self, violated: bool) -> None:
+        self._violated = violated
         self.update()

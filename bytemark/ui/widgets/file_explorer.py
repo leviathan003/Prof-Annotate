@@ -51,8 +51,14 @@ class _FileModel(QAbstractItemModel):
         self._unsaved.add(image_path)
         self._emit_data_changed()
 
-    def mark_saved(self, image_path: str) -> None:
+    def mark_saved(self, image_path: str, has_label: bool = True) -> None:
         self._unsaved.discard(image_path)
+        # Update the entry's has_label so color reflects actual on-disk state
+        for _, entries in self._groups:
+            for entry in entries:
+                if str(entry.image_path) == image_path:
+                    entry.has_label = has_label
+                    break
         self._emit_data_changed()
 
     def _emit_data_changed(self) -> None:
@@ -203,9 +209,9 @@ class FileExplorer(QFrame):
         if self._model:
             self._model.mark_unsaved(image_path)
 
-    def mark_saved(self, image_path: str) -> None:
+    def mark_saved(self, image_path: str, has_label: bool = True) -> None:
         if self._model:
-            self._model.mark_saved(image_path)
+            self._model.mark_saved(image_path, has_label)
 
     def clear(self) -> None:
         self._model = None
