@@ -215,17 +215,28 @@ class AnnotationCanvas(QFrame):
         self._clear_diff()
         self._diff_item = DiffOverlay(old, new, self._img_w, self._img_h)
         self._scene.addItem(self._diff_item)
+        self._draw_mode_label.setText("[ DIFF PREVIEW ]  Enter = accept  ·  Esc = reject")
+        self._draw_mode_label.setStyleSheet("color: #FFD700;")
+        self._draw_mode_label.show()
 
     def accept_diff(self) -> None:
         if self._diff_item is not None:
             self._undo.push(self._annotations)
-            self._annotations.instances = self._diff_item._new
+            self._annotations.instances = list(self._diff_item._new)
             self._clear_diff()
             self._rebuild_overlays()
             self._mark_dirty()
+            self._deselect()  # clears JSON editor via instance_deselected signal
 
     def reject_diff(self) -> None:
         self._clear_diff()
+        self._draw_mode_label.setStyleSheet("")
+        if self._active_draw_mode == "kpts":
+            self._update_kpt_mode_label()
+        elif self._active_draw_mode:
+            self._draw_mode_label.setText(f"[ {self._active_draw_mode.upper()} MODE ]")
+        else:
+            self._draw_mode_label.hide()
 
     # ── Image loading ─────────────────────────────────────────────────────────
 
