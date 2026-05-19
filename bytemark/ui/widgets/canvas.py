@@ -226,7 +226,7 @@ class AnnotationCanvas(QFrame):
             self._clear_diff()
             self._rebuild_overlays()
             self._mark_dirty()
-            self._deselect()  # clears JSON editor via instance_deselected signal
+            self._deselect()
 
     def reject_diff(self) -> None:
         self._clear_diff()
