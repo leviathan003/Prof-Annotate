@@ -23,11 +23,19 @@ class KeypointTool:
         img_w: int,
         img_h: int,
         on_keypoint_placed: Callable[[int, Keypoint], None],
+        active_kpt_names: list[str] | None = None,
     ) -> None:
         self._scene = scene
         self._img_w = img_w
         self._img_h = img_h
         self._on_placed = on_keypoint_placed
+
+        if active_kpt_names:
+            self._active_names = active_kpt_names
+        else:
+            self._active_names = [KEYPOINT_NAMES[i] for i in range(NUM_KEYPOINTS)]
+
+        self._num_active = len(self._active_names)
         self._current_idx = 0
         self._active = False
         self._cursor_item = None
@@ -38,7 +46,7 @@ class KeypointTool:
 
     def activate(self, start_idx: int = 0) -> None:
         self._active = True
-        self._current_idx = start_idx % NUM_KEYPOINTS
+        self._current_idx = start_idx % self._num_active
 
     def deactivate(self) -> None:
         self._active = False
@@ -48,7 +56,13 @@ class KeypointTool:
         return self._active
 
     def current_name(self) -> str:
-        return KEYPOINT_NAMES.get(self._current_idx, str(self._current_idx))
+        if 0 <= self._current_idx < len(self._active_names):
+            return self._active_names[self._current_idx]
+        return str(self._current_idx)
+
+    def skip(self) -> None:
+        """Advance to the next keypoint without placing — triggered by right-click."""
+        self._current_idx = (self._current_idx + 1) % self._num_active
 
     def mouse_move(self, scene_pos: QPointF) -> bool:
         if not self._active:
@@ -65,16 +79,13 @@ class KeypointTool:
             pen,
             QBrush(color),
         )
-        # Name label — rendered in scene space but sized for screen
-        name = KEYPOINT_NAMES.get(self._current_idx, str(self._current_idx))
-        label_text = f"{self._current_idx:02d} · {name}"
+        label_text = f"{self._current_idx:02d} · {self.current_name()}"
         text = self._scene.addSimpleText(label_text)
         font = QFont()
         font.setPointSizeF(max(5.0, 8.0 / self._zoom))
         text.setFont(font)
         text.setBrush(QBrush(QColor("#FFFFFF")))
         text.setPos(scene_pos.x() + r + 2 / self._zoom, scene_pos.y() - 5 / self._zoom)
-        # Group both items under a single handle
         self._cursor_item = (ellipse, text)
         return True
 
@@ -85,7 +96,7 @@ class KeypointTool:
             scene_pos.x(), scene_pos.y(), self._img_w, self._img_h, visibility=2
         )
         self._on_placed(self._current_idx, kp)
-        self._current_idx = (self._current_idx + 1) % NUM_KEYPOINTS
+        self._current_idx = (self._current_idx + 1) % self._num_active
         return True
 
     def mouse_release(self, scene_pos: QPointF) -> bool:

@@ -63,8 +63,9 @@ from bytemark.ui.widgets.status_bar import StatusBar
 from bytemark.ui.widgets.yaml_editor import YamlEditor
 from bytemark.utils.logger import setup_logging
 
-
 # ── Background workers ────────────────────────────────────────────────────────
+
+
 class _SingleAutoAnnotateWorker(QObject):
     done = Signal(list)
     failed = Signal(str)
@@ -352,11 +353,6 @@ class MainWindow(QMainWindow):
         self._create_btn.setObjectName("create_dataset_btn")
         layout.addWidget(self._create_btn)
 
-        self._kpt_edit_btn = QPushButton("Edit Keypoints")
-        self._kpt_edit_btn.setObjectName("kpt_edit_btn")
-        self._kpt_edit_btn.setEnabled(False)
-        layout.addWidget(self._kpt_edit_btn)
-
         layout.addStretch()
 
         title = QLabel(APP_NAME)
@@ -376,7 +372,10 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self._create_btn.clicked.connect(self._on_create_dataset)
         self._help_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(APP_DOCS_URL)))
-        self._kpt_edit_btn.clicked.connect(self._on_bulk_kpt_edit)
+
+        # Ctrl+Del — bulk keypoint removal (replaces toolbar button)
+        kpt_del_sc = QShortcut(QKeySequence("Ctrl+Del"), self)
+        kpt_del_sc.activated.connect(self._on_bulk_kpt_edit)
 
         self._file_explorer.file_selected.connect(self._on_entry_selected)
         self._file_explorer.open_folder_requested.connect(self._on_open_folder)
@@ -702,8 +701,6 @@ class MainWindow(QMainWindow):
         self._is_git_repo = is_git_repo(self._dataset_root)
         self._git_root = find_repo_root(self._dataset_root) if self._is_git_repo else None
 
-        self._kpt_edit_btn.setEnabled(True)
-
         recovered = load_session(self._dataset_root)
         if recovered:
             self._dirty_map = recovered
@@ -782,12 +779,17 @@ class MainWindow(QMainWindow):
         idx = max(0, min(idx, len(entries) - 1))
         if idx == self._current_idx and self._current_entry is not None:
             return
-        # Auto-save current image before switching
         self._autosave_current()
         self._current_idx = idx
         self._current_entry = entries[idx]
         self._canvas.set_nav_label(idx + 1, len(entries))
-        self._canvas.load_entry(self._current_entry)
+        nk = self._dataset_index.num_keypoints
+        names = (
+            self._dataset_index.active_keypoint_names
+            if self._dataset_index.active_keypoint_names
+            else None
+        )
+        self._canvas.load_entry(self._current_entry, num_keypoints=nk, active_kpt_names=names)
 
     def _navigate_next(self) -> None:
         if self._dataset_index:
@@ -827,10 +829,9 @@ class MainWindow(QMainWindow):
         if self._json_editor._selected_idx is not None:
             self._json_editor._refresh_display(force=True)
 
-    # ── AutoSave Helper ───────────────────────────────────────────────────────────
+    # ── AutoSave Helper ───────────────────────────────────────────────────────
 
     def _autosave_current(self) -> None:
-        """Write dirty annotations for the current image to disk silently."""
         if self._current_entry is None:
             return
         if self._canvas._annotations is None:
@@ -844,7 +845,6 @@ class MainWindow(QMainWindow):
         self._canvas._dirty = False
         self._canvas._undo.clear()
         self._canvas._update_border()
-        # Reflect saved state in explorer
         has_label = len(ann.instances) > 0
         self._file_explorer.mark_saved(str(self._current_entry.image_path), has_label=has_label)
         self._dirty_map.pop(ann.image_path, None)
@@ -868,10 +868,13 @@ class MainWindow(QMainWindow):
         else:
             self._canvas._undo_action()
 
-    # ── Bulk keypoint edit ────────────────────────────────────────────────────
+    # ── Bulk keypoint removal (Ctrl+Del) ──────────────────────────────────────
 
     def _on_bulk_kpt_edit(self) -> None:
         if self._dataset_root is None:
+            self._status_bar.showMessage(
+                "No dataset loaded — open a dataset before using bulk keypoint removal.", 3000
+            )
             return
         from bytemark.ui.dialogs.kpt_bulk_edit_dialog import KptBulkEditDialog
 
@@ -983,7 +986,6 @@ class MainWindow(QMainWindow):
         LAYOUT_FILE.write_text(json.dumps(data))
 
     def closeEvent(self, event) -> None:
-        # Auto-save current image on close
         self._autosave_current()
         if self._dataset_root and self._dirty_map:
             save_session(self._dataset_root, self._dirty_map)

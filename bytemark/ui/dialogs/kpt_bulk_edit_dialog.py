@@ -1,6 +1,7 @@
 """
 bytemark/ui/dialogs/kpt_bulk_edit_dialog.py
-Zero out selected keypoints across all label files in a dataset.
+Remove selected keypoints across all label files in a dataset.
+Triggered via Ctrl+Del shortcut — no toolbar button.
 """
 
 from __future__ import annotations
@@ -29,10 +30,10 @@ class _BulkKptWorker(QObject):
     finished = Signal(dict)
     failed = Signal(str)
 
-    def __init__(self, root: Path, zero_indices: set[int]) -> None:
+    def __init__(self, root: Path, remove_indices: set[int]) -> None:
         super().__init__()
         self._root = root
-        self._indices = zero_indices
+        self._indices = remove_indices
 
     def run(self) -> None:
         try:
@@ -41,7 +42,7 @@ class _BulkKptWorker(QObject):
             lbl_dir = self._root / YOLO_LABELS_SUBDIR
             files = list(lbl_dir.rglob(f"*{YOLO_LABEL_EXT}"))
             self.log.emit(f"Processing {len(files)} label file(s)...")
-            originals = {}
+            originals: dict = {}
             for lbl in files:
                 originals[lbl] = lbl.read_text(encoding="utf-8")
                 self._process(lbl)
@@ -53,12 +54,18 @@ class _BulkKptWorker(QObject):
                 yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
             )
             data = load_yaml(self._root)
-            data["zeroed_keypoints"] = sorted(self._indices)
-            data["zeroed_keypoint_names"] = [
-                KEYPOINT_NAMES[i] for i in sorted(self._indices) if i in KEYPOINT_NAMES
-            ]
+            remaining = sorted(set(range(NUM_KEYPOINTS)) - self._indices)
+            remaining_names = [KEYPOINT_NAMES[i] for i in remaining if i in KEYPOINT_NAMES]
+            data["kpt_shape"] = [len(remaining), 3]
+            data["keypoint_names"] = remaining_names
+            # Clean up any legacy zeroing keys
+            data.pop("zeroed_keypoints", None)
+            data.pop("zeroed_keypoint_names", None)
             save_yaml(self._root, data)
-            self.log.emit("Complete. data.yaml has been updated accordingly.")
+            self.log.emit(
+                f"Done. {len(self._indices)} keypoint(s) removed. "
+                f"{len(remaining)} remaining. data.yaml updated."
+            )
             self.finished.emit(originals)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -75,8 +82,10 @@ class _BulkKptWorker(QObject):
             if is_pose or is_combined:
                 new = list(parts[:5])
                 for i in range(NUM_KEYPOINTS):
-                    off = 5 + i * 3
-                    new += ["0", "0", "0"] if i in self._indices else list(parts[off : off + 3])
+                    if i not in self._indices:
+                        off = 5 + i * 3
+                        new += list(parts[off : off + 3])
+                # Append any trailing seg points (combined format)
                 new += list(parts[5 + pose_fields :])
                 out.append(" ".join(new))
             else:
@@ -103,18 +112,17 @@ class KptBulkEditDialog(QDialog):
         inner.setContentsMargins(28, 24, 28, 24)
         inner.setSpacing(12)
 
-        t = QLabel("Bulk Keypoint Zeroing")
+        t = QLabel("Bulk Keypoint Removal")
         t.setObjectName("dialog_title")
         t.setAlignment(Qt.AlignmentFlag.AlignCenter)
         inner.addWidget(t)
 
         b = QLabel(
-            "Select the keypoints to zero out across all label files in this dataset, "
+            "Select the keypoints to permanently remove from every label file in this dataset, "
             "Annotator.\n\n"
-            "Their x, y, and visibility will be set to 0 throughout. "
-            "The data.yaml will be updated to reflect the change.\n\n"
-            "This cannot be undone with Ctrl+Z "
-            "once the deletions are done, the originals are gone."
+            "Their fields will be stripped entirely from all annotations. "
+            "The data.yaml will be updated with the new keypoint count and names.\n\n"
+            "This cannot be undone with Ctrl+Z — once removed, the originals are gone."
         )
         b.setObjectName("dialog_body")
         b.setWordWrap(True)
@@ -144,7 +152,7 @@ class KptBulkEditDialog(QDialog):
         inner.addWidget(self._status)
 
         btn_row = QHBoxLayout()
-        self._run_btn = QPushButton("> Zero Out Selected Keypoints")
+        self._run_btn = QPushButton("> Remove Selected Keypoints")
         self._run_btn.setObjectName("primary_button")
         self._run_btn.clicked.connect(self._run)
         cancel_btn = QPushButton("Cancel")
@@ -167,14 +175,13 @@ class KptBulkEditDialog(QDialog):
 
         dlg = ConfirmDialog(
             "Permanent Dataset Modification — Are You Certain?",
-            f"Annotator, you are about to zero out the following keypoint(s) "
-            f"across every label file in this dataset:\n\n"
+            f"Annotator, you are about to permanently remove the following keypoint(s) "
+            f"from every label file in this dataset:\n\n"
             f"{names}\n\n"
-            f"This is a substantive, dataset-wide change. "
-            f"It cannot be reversed with Ctrl+Z, once deleted "
-            f"the originals are permanently gone.\n\n"
-            f"Proceed with the care befitting an expert.",
-            "> Yes, I understand — proceed",
+            f"Their fields will be stripped entirely. "
+            f"This cannot be reversed with Ctrl+Z — once removed, the originals are gone.\n\n"
+            f"Proceed with care.",
+            "> Yes, remove them permanently",
             "No, let me reconsider",
             self,
         )

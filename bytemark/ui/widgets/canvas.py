@@ -26,6 +26,7 @@ from bytemark.config.constants import (
     CANVAS_SCROLL_SENSITIVITY,
     CANVAS_ZOOM_MAX,
     CANVAS_ZOOM_MIN,
+    NUM_KEYPOINTS,
 )
 from bytemark.config.skeleton import KEYPOINT_NAMES
 from bytemark.core.annotation.models import (
@@ -60,7 +61,6 @@ from bytemark.utils.image import load_image_rgb, numpy_to_qpixmap
 
 
 def _to_scene(view: QGraphicsView, event: QMouseEvent) -> QPointF:
-    """Convert mouse event position to scene coordinates safely."""
     return view.mapToScene(event.position().toPoint())
 
 
@@ -108,6 +108,9 @@ class AnnotationCanvas(QFrame):
             Modality.KEYPOINTS,
             Modality.SEGMENTATION,
         }
+
+        self._num_keypoints: int = NUM_KEYPOINTS
+        self._active_kpt_names: list[str] | None = None
 
         self._selected_instance: Optional[int] = None
         self._selected_kpt_idx: Optional[int] = None
@@ -185,17 +188,26 @@ class AnnotationCanvas(QFrame):
             "• A / D or ← / → — previous / next image\n"
             "• Click annotation — isolate & drag points  • Esc — deselect / exit mode\n"
             "• Middle mouse — pan  • Scroll — zoom\n"
-            "• S mode: single click = add point, double click = close mask"
+            "• S mode: single click = add point, double click = close mask\n"
+            "• K mode: right-click = skip current keypoint\n"
+            "• Ctrl+Del — bulk keypoint removal"
         )
         self._placeholder.setDefaultTextColor(QColor("#2A2A2A"))
         self._set_border("unannotated")
 
     # ── Public API ────────────────────────────────────────────────────────────
 
-    def load_entry(self, entry) -> None:
+    def load_entry(
+        self,
+        entry,
+        num_keypoints: int = NUM_KEYPOINTS,
+        active_kpt_names: list[str] | None = None,
+    ) -> None:
         from bytemark.core.annotation.parser import parse_label_file
 
-        ann = parse_label_file(entry.image_path, entry.label_path)
+        self._num_keypoints = num_keypoints
+        self._active_kpt_names = active_kpt_names
+        ann = parse_label_file(entry.image_path, entry.label_path, num_keypoints)
         self._start_image_load(str(entry.image_path), ann)
 
     def set_annotations(self, ann: ImageAnnotations) -> None:
@@ -227,6 +239,10 @@ class AnnotationCanvas(QFrame):
             self._rebuild_overlays()
             self._mark_dirty()
             self._deselect()
+            # Issue 1: update JSON panel immediately after accepting diff
+            if self._annotations.instances:
+                self._select_instance(0)
+                self.instance_selected.emit(self._annotations, 0)
 
     def reject_diff(self) -> None:
         self._clear_diff()
@@ -296,7 +312,11 @@ class AnnotationCanvas(QFrame):
     def _init_tools(self) -> None:
         self._bbox_tool = BBoxTool(self._scene, self._img_w, self._img_h, self._on_bbox_drawn)
         self._kpt_tool = KeypointTool(
-            self._scene, self._img_w, self._img_h, self._on_keypoint_placed
+            self._scene,
+            self._img_w,
+            self._img_h,
+            self._on_keypoint_placed,
+            active_kpt_names=self._active_kpt_names,
         )
         self._seg_tool = SegmentationTool(
             self._scene, self._img_w, self._img_h, self._on_seg_closed
@@ -326,7 +346,13 @@ class AnnotationCanvas(QFrame):
                 self._bbox_items.append(item)
                 self._bbox_inst_map.append(i)
             if inst.has_keypoints():
-                item = KeypointOverlay(inst.keypoints, self._img_w, self._img_h, i)
+                item = KeypointOverlay(
+                    inst.keypoints,
+                    self._img_w,
+                    self._img_h,
+                    i,
+                    active_kpt_names=self._active_kpt_names,
+                )
                 item.setZValue(2)
                 self._scene.addItem(item)
                 self._kpt_items.append(item)
@@ -381,7 +407,7 @@ class AnnotationCanvas(QFrame):
     def _update_kpt_mode_label(self) -> None:
         if self._active_draw_mode == "kpts" and self._kpt_tool:
             idx = self._kpt_tool._current_idx
-            name = KEYPOINT_NAMES.get(idx, str(idx))
+            name = self._kpt_tool.current_name()
             self._draw_mode_label.setText(f"[ KPTS MODE ]  →  {idx:02d} · {name}")
 
     def _create_seg_preview(self) -> None:
@@ -448,7 +474,6 @@ class AnnotationCanvas(QFrame):
             self.annotations_changed.emit(self._annotations)
 
     def _validate_annotations(self) -> list[int]:
-        """Returns instance indices where any kpt or seg point lies outside the bbox."""
         if not self._annotations:
             return []
         violating: list[int] = []
@@ -489,7 +514,6 @@ class AnnotationCanvas(QFrame):
         self._violation_active = False
         for item in self._bbox_items:
             item.set_violated(False)
-        # Now safe to let _clear_warning actually clear
         self._draw_mode_label.setStyleSheet("")
         if self._active_draw_mode == "kpts":
             self._update_kpt_mode_label()
@@ -546,7 +570,7 @@ class AnnotationCanvas(QFrame):
             return
         inst = self._annotations.instances[self._selected_instance]
         if inst.keypoints is None:
-            inst.keypoints = [None] * 19
+            inst.keypoints = [None] * self._num_keypoints
         self._undo.push(self._annotations)
         inst.keypoints[kpt_idx] = kp
         self._rebuild_overlays()
@@ -660,8 +684,6 @@ class AnnotationCanvas(QFrame):
         state = self._undo.undo()
         if state is not None:
             self._annotations = state
-
-            # Full interaction state reset — nothing carries over from pre-undo
             self._selected_instance = None
             self._selected_kpt_idx = None
             self._selected_pt_idx = None
@@ -679,10 +701,7 @@ class AnnotationCanvas(QFrame):
             self._mark_dirty()
             self.instance_deselected.emit()
 
-            # If kpt draw mode was active, resync the tool index to the
-            # first unlabelled keypoint in whatever instance was being edited
             if self._active_draw_mode == "kpts" and self._kpt_tool and self._annotations.instances:
-                # Pick first instance as best-effort target after undo
                 inst = self._annotations.instances[0]
                 if inst.keypoints:
                     next_idx = next(
@@ -733,7 +752,6 @@ class AnnotationCanvas(QFrame):
         key = event.key()
         mods = event.modifiers()
 
-        # Ctrl+Shift+A — auto-annotate current image
         if mods == (Qt.KeyboardModifier.ControlModifier | Qt.KeyboardModifier.ShiftModifier):
             if key == Qt.Key.Key_A:
                 self.auto_annotate_triggered.emit()
@@ -815,10 +833,18 @@ class AnnotationCanvas(QFrame):
         return False
 
     def _handle_mouse_press(self, event: QMouseEvent) -> None:
+        # Right-click in kpt mode skips the current keypoint
+        if event.button() == Qt.MouseButton.RightButton:
+            if self._active_draw_mode == "kpts" and self._kpt_tool:
+                self._kpt_tool.skip()
+                self._update_kpt_mode_label()
+            return
+
         if event.button() == Qt.MouseButton.MiddleButton:
             self._panning = True
             self._pan_origin = event.position()
             return
+
         if event.button() != Qt.MouseButton.LeftButton:
             return
 
@@ -902,7 +928,6 @@ class AnnotationCanvas(QFrame):
         if self._annotations is None:
             return
 
-        # ── 1. Keypoints always win — checked first regardless of selection ──────
         for j, item in enumerate(self._kpt_items):
             if not item.isVisible():
                 continue
@@ -919,7 +944,6 @@ class AnnotationCanvas(QFrame):
                 self.instance_selected.emit(self._annotations, inst_idx)
                 return
 
-        # ── 2. Seg points second ─────────────────────────────────────────────────
         for j, item in enumerate(self._seg_items):
             if not item.isVisible():
                 continue
@@ -936,7 +960,6 @@ class AnnotationCanvas(QFrame):
                 self.instance_selected.emit(self._annotations, inst_idx)
                 return
 
-        # ── 3. Bbox resize handles third (only on selected instance) ─────────────
         if self._selected_instance is not None:
             for j, item in enumerate(self._bbox_items):
                 if self._bbox_inst_map[j] == self._selected_instance:
@@ -946,7 +969,6 @@ class AnnotationCanvas(QFrame):
                         return
                     break
 
-        # ── 4. Bbox move (selected instance interior) ─────────────────────────────
         if self._selected_instance is not None:
             for j, item in enumerate(self._bbox_items):
                 if self._bbox_inst_map[j] == self._selected_instance:
@@ -955,7 +977,6 @@ class AnnotationCanvas(QFrame):
                         return
                     break
 
-        # ── 5. Select a different bbox instance ───────────────────────────────────
         for j, item in enumerate(self._bbox_items):
             if not item.isVisible():
                 continue

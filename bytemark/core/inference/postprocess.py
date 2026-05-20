@@ -39,16 +39,15 @@ def postprocess(
     pad_x = (input_w - orig_w * scale) / 2
     pad_y = (input_h - orig_h * scale) / 2
 
-    # Locate combined head (rank-3) and proto tensor (rank-4, dim-1 == NM)
     combined_raw = next((o for o in raw if o.ndim == 3), None)
     proto_raw = next((o for o in raw if o.ndim == 4 and o.shape[1] == _NM), None)
     if combined_raw is None:
         logger.warning("postprocess: no rank-3 combined output found")
         return []
 
-    predictions = combined_raw[0]  # (C, A) or (A, C)
+    predictions = combined_raw[0]
     if predictions.shape[0] < predictions.shape[1]:
-        predictions = predictions.T  # ensure (A, C)
+        predictions = predictions.T
 
     scores = predictions[:, 4]
     mask = scores >= conf_threshold
@@ -120,14 +119,13 @@ def _decode_mask(
     nm, mH, mW = proto.shape
     coeffs = pred[4 + _NC : 4 + _NC + nm].astype(np.float32)
 
-    # Decode: sigmoid(coeffs @ proto.reshape(nm, -1))
     mask_flat = coeffs @ proto.reshape(nm, -1)
     mask_map = (1.0 / (1.0 + np.exp(-mask_flat))).reshape(mH, mW).astype(np.float32)
 
     # Upsample to input size
     mask_input = cv2.resize(mask_map, (input_w, input_h), interpolation=cv2.INTER_LINEAR)
 
-    # Crop to bbox in input-image space
+    # Crop to bbox in input-image space to constrain the mask
     bx1, by1, bx2, by2 = boxes_xyxy[det_idx]
     x1c, y1c = int(max(0, bx1)), int(max(0, by1))
     x2c, y2c = int(min(input_w, bx2)), int(min(input_h, by2))
@@ -143,12 +141,13 @@ def _decode_mask(
     mask_orig = cv2.resize(crop, (orig_w, orig_h), interpolation=cv2.INTER_LINEAR)
 
     binary = (mask_orig > 0.5).astype(np.uint8)
-    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_TC89_KCOS)
     if not contours:
         return None
 
     largest = max(contours, key=cv2.contourArea)
-    epsilon = 0.005 * cv2.arcLength(largest, True)
+    # Small epsilon = many polygon points, preserving body shape
+    epsilon = 0.001 * cv2.arcLength(largest, True)
     approx = cv2.approxPolyDP(largest, epsilon, True)
     if len(approx) < 3:
         return None

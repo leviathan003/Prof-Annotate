@@ -18,13 +18,17 @@ _SELECTED_RADIUS = 4.5
 
 
 def _kpt_visible(kp) -> bool:
-    """A keypoint is drawable only if it exists and is not zeroed out."""
     return kp is not None and not (kp.x == 0 and kp.y == 0)
 
 
 class KeypointOverlay(QGraphicsItem):
     def __init__(
-        self, keypoints: list[Keypoint], img_w: int, img_h: int, instance_idx: int = 0
+        self,
+        keypoints: list[Keypoint],
+        img_w: int,
+        img_h: int,
+        instance_idx: int = 0,
+        active_kpt_names: list[str] | None = None,
     ) -> None:
         super().__init__()
         self._keypoints = keypoints
@@ -34,6 +38,20 @@ class KeypointOverlay(QGraphicsItem):
         self._selected_kpt: int | None = None
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
+
+        if active_kpt_names:
+            self._kpt_names = active_kpt_names
+            # Remap skeleton connections to indices within the active subset
+            name_to_new: dict[str, int] = {n: i for i, n in enumerate(active_kpt_names)}
+            self._connections: list[tuple[int, int]] = [
+                (name_to_new[KEYPOINT_NAMES[a]], name_to_new[KEYPOINT_NAMES[b]])
+                for a, b in SKELETON_CONNECTIONS
+                if KEYPOINT_NAMES.get(a) in name_to_new and KEYPOINT_NAMES.get(b) in name_to_new
+            ]
+        else:
+            self._kpt_names = [KEYPOINT_NAMES.get(i, str(i)) for i in range(len(keypoints))]
+            self._connections = list(SKELETON_CONNECTIONS)
+
         self._compute_bounds()
 
     def _compute_bounds(self) -> None:
@@ -61,8 +79,8 @@ class KeypointOverlay(QGraphicsItem):
         base_kp = keypoint_color()
         transform = painter.worldTransform()
 
-        # ── Skeleton lines ────────────────────────────────────────────────────
-        for a, b in SKELETON_CONNECTIONS:
+        # Skeleton lines
+        for a, b in self._connections:
             if a >= len(self._keypoints) or b >= len(self._keypoints):
                 continue
             ka, kb = self._keypoints[a], self._keypoints[b]
@@ -79,7 +97,7 @@ class KeypointOverlay(QGraphicsItem):
                 QPointF(kb.x * self._img_w, kb.y * self._img_h),
             )
 
-        # ── Keypoint dots ─────────────────────────────────────────────────────
+        # Keypoint dots
         for i, kp in enumerate(self._keypoints):
             if not _kpt_visible(kp):
                 continue
@@ -99,7 +117,7 @@ class KeypointOverlay(QGraphicsItem):
             painter.drawEllipse(screen, r, r)
 
             if i == self._selected_kpt:
-                name = KEYPOINT_NAMES.get(i, str(i))
+                name = self._kpt_names[i] if i < len(self._kpt_names) else str(i)
                 font = QFont()
                 font.setPointSizeF(8.5)
                 painter.setFont(font)

@@ -12,6 +12,7 @@ from pathlib import Path
 
 from bytemark.config.constants import (
     DATA_YAML_FILENAME,
+    NUM_KEYPOINTS,
     YOLO_IMAGE_EXTS,
     YOLO_IMAGES_SUBDIR,
     YOLO_LABEL_EXT,
@@ -22,6 +23,8 @@ from bytemark.config.constants import (
 from bytemark.utils.image import derive_label_path, is_image_corrupted
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_NUM_KPT = NUM_KEYPOINTS
 
 
 @dataclass
@@ -40,6 +43,11 @@ class DatasetIndex:
     root: Path
     entries: list[ImageEntry] = field(default_factory=list)
     yaml_path: Path | None = None
+    active_keypoint_names: list[str] = field(default_factory=list)
+
+    @property
+    def num_keypoints(self) -> int:
+        return len(self.active_keypoint_names) if self.active_keypoint_names else _DEFAULT_NUM_KPT
 
     @property
     def train_entries(self) -> list[ImageEntry]:
@@ -62,6 +70,15 @@ class DatasetIndex:
         return sum(1 for e in self.entries if e.is_corrupted)
 
 
+def _apply_yaml_kpt_config(index: DatasetIndex) -> None:
+    """Read keypoint_names from data.yaml into the index if present."""
+    from bytemark.core.dataset.yaml_handler import load_yaml
+
+    data = load_yaml(index.root)
+    if "keypoint_names" in data and isinstance(data["keypoint_names"], list):
+        index.active_keypoint_names = data["keypoint_names"]
+
+
 def load_flat_dataset(root: Path) -> DatasetIndex:
     root = Path(root).resolve()
     index = DatasetIndex(root=root)
@@ -77,11 +94,12 @@ def load_flat_dataset(root: Path) -> DatasetIndex:
             image_path=img_path,
             label_path=lbl_path,
             split=YOLO_TRAIN_DIR,
-            is_corrupted=False,  # checked lazily on open
+            is_corrupted=False,
             has_label=lbl_path.exists() and lbl_path.stat().st_size > 0,
         )
         index.entries.append(entry)
 
+    _apply_yaml_kpt_config(index)
     logger.info("Indexed %d images (flat) in %s", index.total, root)
     return index
 
@@ -107,10 +125,11 @@ def load_dataset(root: str | Path) -> DatasetIndex:
                 image_path=img_path,
                 label_path=lbl_path,
                 split=split,
-                is_corrupted=False,  # checked lazily on open
+                is_corrupted=False,
                 has_label=lbl_path.exists() and lbl_path.stat().st_size > 0,
             )
             index.entries.append(entry)
 
+    _apply_yaml_kpt_config(index)
     logger.info("Indexed %d images in %s", index.total, root)
     return index

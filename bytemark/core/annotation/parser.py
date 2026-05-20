@@ -23,7 +23,11 @@ from bytemark.utils.image import is_image_corrupted
 logger = logging.getLogger(__name__)
 
 
-def parse_label_file(image_path: str | Path, label_path: str | Path) -> ImageAnnotations:
+def parse_label_file(
+    image_path: str | Path,
+    label_path: str | Path,
+    num_keypoints: int = NUM_KEYPOINTS,
+) -> ImageAnnotations:
     image_path = Path(image_path)
     label_path = Path(label_path)
 
@@ -43,7 +47,7 @@ def parse_label_file(image_path: str | Path, label_path: str | Path) -> ImageAnn
                 line = raw.strip()
                 if not line:
                     continue
-                ann = _parse_line(line, lineno, label_path)
+                ann = _parse_line(line, lineno, label_path, num_keypoints)
                 if ann is not None:
                     result.instances.append(ann)
     except OSError as exc:
@@ -52,7 +56,12 @@ def parse_label_file(image_path: str | Path, label_path: str | Path) -> ImageAnn
     return result
 
 
-def _parse_line(line: str, lineno: int, label_path: Path) -> Optional[Annotation]:
+def _parse_line(
+    line: str,
+    lineno: int,
+    label_path: Path,
+    num_keypoints: int = NUM_KEYPOINTS,
+) -> Optional[Annotation]:
     parts = line.split()
     if not parts:
         return None
@@ -69,15 +78,15 @@ def _parse_line(line: str, lineno: int, label_path: Path) -> Optional[Annotation
     if n == 4:
         return _parse_bbox_only(class_id, rest, lineno, label_path)
 
-    pose_fields = 3 * NUM_KEYPOINTS
+    pose_fields = 3 * num_keypoints
     if n == 4 + pose_fields:
-        return _parse_pose(class_id, rest, lineno, label_path)
+        return _parse_pose(class_id, rest, lineno, label_path, num_keypoints)
 
     if n >= 6 and n % 2 == 0:
         return _parse_segmentation(class_id, rest, lineno, label_path)
 
     if n > 4 + pose_fields and (n - 4 - pose_fields) % 2 == 0:
-        return _parse_combined(class_id, rest, lineno, label_path)
+        return _parse_combined(class_id, rest, lineno, label_path, num_keypoints)
 
     logger.warning("%s:%d — unrecognised field count %d", label_path, lineno, n)
     return None
@@ -96,7 +105,7 @@ def _parse_bbox_only(class_id, rest, lineno, path):
         return None
 
 
-def _parse_pose(class_id, rest, lineno, path):
+def _parse_pose(class_id, rest, lineno, path, num_keypoints: int = NUM_KEYPOINTS):
     try:
         vals = _floats(rest)
         bbox = BBox(*vals[:4])
@@ -118,11 +127,11 @@ def _parse_segmentation(class_id, rest, lineno, path):
         return None
 
 
-def _parse_combined(class_id, rest, lineno, path):
+def _parse_combined(class_id, rest, lineno, path, num_keypoints: int = NUM_KEYPOINTS):
     try:
         vals = _floats(rest)
         bbox = BBox(*vals[:4])
-        pe = 4 + 3 * NUM_KEYPOINTS
+        pe = 4 + 3 * num_keypoints
         kv = vals[4:pe]
         kpts = [Keypoint(kv[i], kv[i + 1], int(kv[i + 2])) for i in range(0, len(kv), 3)]
         sv = vals[pe:]
