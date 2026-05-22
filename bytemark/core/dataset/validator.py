@@ -6,6 +6,7 @@ YOLO11 format validation and reshuffling.
 from __future__ import annotations
 
 import logging
+import os
 import random
 import shutil
 from dataclasses import dataclass, field
@@ -14,6 +15,13 @@ from typing import Optional
 
 from bytemark.config.constants import (
     DATA_YAML_FILENAME,
+    SCENARIO_EMPTY,
+    SCENARIO_IMAGES_ONLY_FLAT,
+    SCENARIO_LABELS_ONLY,
+    SCENARIO_OK,
+    SCENARIO_STRUCTURED_ALL_EMPTY,
+    SCENARIO_STRUCTURED_LABELS_EMPTY,
+    SCENARIO_STRUCTURED_ONE_SPLIT,
     YOLO_IMAGE_EXTS,
     YOLO_IMAGES_SUBDIR,
     YOLO_LABEL_EXT,
@@ -21,6 +29,20 @@ from bytemark.config.constants import (
     YOLO_TRAIN_DIR,
     YOLO_VAL_DIR,
 )
+
+# Re-export for legacy `from bytemark.core.dataset.validator import SCENARIO_*` callers.
+__all__ = [
+    "SCENARIO_EMPTY",
+    "SCENARIO_IMAGES_ONLY_FLAT",
+    "SCENARIO_LABELS_ONLY",
+    "SCENARIO_OK",
+    "SCENARIO_STRUCTURED_ALL_EMPTY",
+    "SCENARIO_STRUCTURED_LABELS_EMPTY",
+    "SCENARIO_STRUCTURED_ONE_SPLIT",
+    "DatasetDiagnosis",
+    "diagnose_dataset",
+    "reshuffle_into_yolo_format",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -132,14 +154,6 @@ def _count_labels(root: Path) -> int:
 
 # ── Dataset Diagnosis ─────────────────────────────────────────────────────────
 
-SCENARIO_EMPTY = "empty"
-SCENARIO_IMAGES_ONLY_FLAT = "images_only_flat"
-SCENARIO_LABELS_ONLY = "labels_only"
-SCENARIO_STRUCTURED_ALL_EMPTY = "structured_all_empty"
-SCENARIO_STRUCTURED_LABELS_EMPTY = "structured_labels_empty"
-SCENARIO_STRUCTURED_ONE_SPLIT = "structured_one_split"
-SCENARIO_OK = "ok"
-
 
 @dataclass
 class DatasetDiagnosis:
@@ -167,10 +181,74 @@ class DatasetDiagnosis:
         return YOLO_TRAIN_DIR if self.train_image_count >= self.val_image_count else YOLO_VAL_DIR
 
 
+def _count_ext_scandir(directory: Optional[Path], extensions: set[str]) -> int:
+    """Count files in `directory` whose lowercase suffix is in `extensions`.
+    Uses `os.scandir` so file-type info comes from the readdir result without
+    extra per-entry stat calls."""
+    if directory is None:
+        return 0
+    try:
+        it = os.scandir(directory)
+    except OSError:
+        return 0
+    count = 0
+    with it:
+        for entry in it:
+            name = entry.name
+            dot = name.rfind(".")
+            if dot < 0:
+                continue
+            if name[dot:].lower() not in extensions:
+                continue
+            try:
+                if entry.is_file():
+                    count += 1
+            except OSError:
+                pass
+    return count
+
+
+def _has_any_flat_image_outside(
+    root: Path,
+    skip_dirs: set[Path],
+    cap: int = 1,
+) -> int:
+    """Return up to `cap` count of image files anywhere under `root` whose
+    immediate parent isn't in `skip_dirs`. Short-circuits — once `cap` is
+    reached we stop walking. Avoids the full root.rglob('*') on every open."""
+    found = 0
+    skip_str = {str(d) for d in skip_dirs}
+    for dirpath, dirnames, filenames in os.walk(root):
+        # Skip walking into either structured dir tree entirely — their
+        # contents are accounted for via the split counters.
+        if dirpath in skip_str:
+            dirnames[:] = []
+            continue
+        for fn in filenames:
+            dot = fn.rfind(".")
+            if dot < 0 or fn[dot:].lower() not in YOLO_IMAGE_EXTS:
+                continue
+            found += 1
+            if found >= cap:
+                return found
+    return found
+
+
+def _has_any_label_under(root: Path) -> bool:
+    """True if any `.txt` file exists under `root`. Walks lazily."""
+    for _, _, filenames in os.walk(root):
+        for fn in filenames:
+            if fn.endswith(YOLO_LABEL_EXT):
+                return True
+    return False
+
+
 def diagnose_dataset(root: Path) -> DatasetDiagnosis:
     """
-    Fast structural scan: only calls iterdir() on the four split dirs, then
-    does bounded next()-rglob for quick existence checks.  No image decoding.
+    Fast structural scan. Calls `os.scandir` on the four split dirs and only
+    performs the (expensive) full-tree walk when there's a reason to —
+    specifically when no structured images were found and we need to decide
+    between "flat images" and "empty". No image decoding.
     """
     root = Path(root).resolve()
     diag = DatasetDiagnosis(scenario=SCENARIO_EMPTY, root=root)
@@ -178,13 +256,8 @@ def diagnose_dataset(root: Path) -> DatasetDiagnosis:
     images_dir = root / YOLO_IMAGES_SUBDIR
     labels_dir = root / YOLO_LABELS_SUBDIR
 
-    has_images_dir = images_dir.exists() and images_dir.is_dir()
-    has_labels_dir = labels_dir.exists() and labels_dir.is_dir()
-
-    def _count_ext(directory: Optional[Path], extensions: set[str]) -> int:
-        if directory is None or not directory.is_dir():
-            return 0
-        return sum(1 for p in directory.iterdir() if p.is_file() and p.suffix.lower() in extensions)
+    has_images_dir = images_dir.is_dir()
+    has_labels_dir = labels_dir.is_dir()
 
     label_exts = {YOLO_LABEL_EXT}
 
@@ -196,47 +269,70 @@ def diagnose_dataset(root: Path) -> DatasetDiagnosis:
     diag.has_train_dir = bool(train_img_dir and train_img_dir.is_dir())
     diag.has_val_dir = bool(val_img_dir and val_img_dir.is_dir())
 
-    diag.train_image_count = _count_ext(train_img_dir, YOLO_IMAGE_EXTS)
-    diag.val_image_count = _count_ext(val_img_dir, YOLO_IMAGE_EXTS)
-    diag.train_label_count = _count_ext(train_lbl_dir, label_exts)
-    diag.val_label_count = _count_ext(val_lbl_dir, label_exts)
+    diag.train_image_count = _count_ext_scandir(train_img_dir, YOLO_IMAGE_EXTS)
+    diag.val_image_count = _count_ext_scandir(val_img_dir, YOLO_IMAGE_EXTS)
+    diag.train_label_count = _count_ext_scandir(train_lbl_dir, label_exts)
+    diag.val_label_count = _count_ext_scandir(val_lbl_dir, label_exts)
 
-    # Images outside the two structured split dirs (flat / mis-structured)
-    structured_dirs = {d for d in (train_img_dir, val_img_dir) if d is not None}
-    diag.flat_image_count = sum(
-        1
-        for p in root.rglob("*")
-        if p.is_file() and p.suffix.lower() in YOLO_IMAGE_EXTS and p.parent not in structured_dirs
-    )
+    has_any_split = diag.has_train_dir or diag.has_val_dir
+    structured_image_count = diag.train_image_count + diag.val_image_count
 
     # ── Classify ──────────────────────────────────────────────────────────────
-    has_any_split = diag.has_train_dir or diag.has_val_dir
-
     if not has_images_dir or not has_any_split:
-        # No YOLO split structure present
-        if diag.flat_image_count == 0:
-            has_any_lbl = next(root.rglob(f"*{YOLO_LABEL_EXT}"), None) is not None
-            diag.scenario = SCENARIO_LABELS_ONLY if has_any_lbl else SCENARIO_EMPTY
+        # No YOLO split structure present — we have to find out whether
+        # there are any flat images or labels lurking in the root.
+        flat = _has_any_flat_image_outside(root, set(), cap=1)
+        if flat == 0:
+            diag.flat_image_count = 0
+            diag.scenario = (
+                SCENARIO_LABELS_ONLY if _has_any_label_under(root) else SCENARIO_EMPTY
+            )
         else:
+            # Use the full count only when the user-facing prompt needs it.
+            diag.flat_image_count = _count_flat_images(root, set())
             diag.scenario = SCENARIO_IMAGES_ONLY_FLAT
         return diag
 
-    if diag.total_structured_images == 0:
-        # Dirs exist but no images inside them
+    structured_dirs = {d for d in (train_img_dir, val_img_dir) if d is not None}
+
+    if structured_image_count == 0:
+        # Dirs exist but no images inside them. Check labels.
         has_any_lbl = (
-            diag.total_structured_labels > 0
-            or next(root.rglob(f"*{YOLO_LABEL_EXT}"), None) is not None
+            diag.total_structured_labels > 0 or _has_any_label_under(root)
         )
         diag.scenario = SCENARIO_LABELS_ONLY if has_any_lbl else SCENARIO_STRUCTURED_ALL_EMPTY
+        # Flat-count is irrelevant in this branch — leave at 0.
         return diag
 
-    # At least one split has images — check balance
+    # Structured splits already hold images. The "flat images outside split"
+    # number is only consumed by user-facing text in the structured-OK and
+    # structured-one-split paths, neither of which surfaces it. Skip the
+    # full-tree walk entirely — that was the open-dataset bottleneck.
+    diag.flat_image_count = 0
+
+    # At least one split has images — check balance.
     if (diag.train_image_count == 0) != (diag.val_image_count == 0):
         diag.scenario = SCENARIO_STRUCTURED_ONE_SPLIT
         return diag
 
-    # Both splits populated
+    # Both splits populated.
     diag.scenario = (
         SCENARIO_OK if diag.total_structured_labels > 0 else SCENARIO_STRUCTURED_LABELS_EMPTY
     )
     return diag
+
+
+def _count_flat_images(root: Path, skip_dirs: set[Path]) -> int:
+    """Exact count — used only when SCENARIO_IMAGES_ONLY_FLAT is selected,
+    because the wizard prompt shows the number to the user."""
+    skip_str = {str(d) for d in skip_dirs}
+    count = 0
+    for dirpath, dirnames, filenames in os.walk(root):
+        if dirpath in skip_str:
+            dirnames[:] = []
+            continue
+        for fn in filenames:
+            dot = fn.rfind(".")
+            if dot >= 0 and fn[dot:].lower() in YOLO_IMAGE_EXTS:
+                count += 1
+    return count

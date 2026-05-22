@@ -12,7 +12,6 @@ from typing import Optional
 from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QDialog,
     QFileDialog,
     QFrame,
     QHBoxLayout,
@@ -28,14 +27,17 @@ from bytemark.config.constants import (
     APP_DOCS_URL,
     APP_NAME,
     APP_VERSION,
-    JSON_PANEL_DEFAULT_WIDTH,
+    JSON_PANEL_MIN_WIDTH,
     LAYOUT_FILE,
-    SIDEBAR_DEFAULT_WIDTH,
+    SIDEBAR_MIN_WIDTH,
     SPLITTER_CANVAS_STRETCH,
     SPLITTER_JSON_STRETCH,
     SPLITTER_SIDEBAR_STRETCH,
+    STATS_PANEL_MIN_HEIGHT,
+    WINDOW_MIN_WIDTH,
     YOLO_IMAGE_EXTS,
     YOLO_TRAIN_DIR,
+    YOLO_VAL_DIR,
 )
 from bytemark.core.annotation.models import ImageAnnotations, Modality
 from bytemark.core.dataset.loader import DatasetIndex, ImageEntry, load_dataset
@@ -58,10 +60,16 @@ from bytemark.ui.widgets.canvas import AnnotationCanvas
 from bytemark.ui.widgets.file_explorer import FileExplorer
 from bytemark.ui.widgets.json_editor import JsonEditor
 from bytemark.ui.widgets.modality_selector import ModalitySelector
+from bytemark.ui.widgets.prof_widget import ProfWidget
 from bytemark.ui.widgets.stats_panel import StatsPanel
 from bytemark.ui.widgets.status_bar import StatusBar
 from bytemark.ui.widgets.yaml_editor import YamlEditor
 from bytemark.utils.logger import setup_logging
+from bytemark.utils.ui_scaling import (
+    horizontal_splitter_sizes,
+    right_splitter_sizes,
+    screen_for,
+)
 
 # ── Background workers ────────────────────────────────────────────────────────
 
@@ -70,16 +78,18 @@ class _SingleAutoAnnotateWorker(QObject):
     done = Signal(list)
     failed = Signal(str)
 
-    def __init__(self, entry, modalities: set) -> None:
+    def __init__(self, entry, modalities: set, active_kpt_names: list[str] | None = None) -> None:
         super().__init__()
         self._entry = entry
         self._modalities = modalities
+        self._active_kpt_names = active_kpt_names
 
     def run(self) -> None:
         try:
             from bytemark.core.inference.engine import InferenceEngine
             from bytemark.core.inference.filter import filter_by_modality
             from bytemark.core.inference.postprocess import postprocess
+            from bytemark.ui.dialogs.dataset_wizard import _reindex_keypoints_for_selection
             from bytemark.utils.image import image_dimensions, load_image_rgb
 
             rgb = load_image_rgb(self._entry.image_path)
@@ -94,6 +104,8 @@ class _SingleAutoAnnotateWorker(QObject):
             anns = postprocess(raw, w, h)
             filtered = filter_by_modality(anns, self._modalities)
             engine.unload()
+            if self._active_kpt_names:
+                filtered = _reindex_keypoints_for_selection(filtered, self._active_kpt_names)
             self.done.emit(filtered)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -159,10 +171,16 @@ class _BulkAutoAnnotateWorker(QObject):
     finished = Signal()
     failed = Signal(str)
 
-    def __init__(self, root: Path, modalities: set) -> None:
+    def __init__(
+        self,
+        root: Path,
+        modalities: set,
+        active_kpt_names: list[str] | None = None,
+    ) -> None:
         super().__init__()
         self._root = root
         self._modalities = modalities
+        self._active_kpt_names = active_kpt_names
 
     def run(self) -> None:
         try:
@@ -177,6 +195,7 @@ class _BulkAutoAnnotateWorker(QObject):
         from bytemark.core.inference.engine import InferenceEngine
         from bytemark.core.inference.filter import filter_by_modality
         from bytemark.core.inference.postprocess import postprocess
+        from bytemark.ui.dialogs.dataset_wizard import _reindex_keypoints_for_selection
         from bytemark.utils.image import derive_label_path, image_dimensions, load_image_rgb
 
         engine = InferenceEngine()
@@ -194,6 +213,8 @@ class _BulkAutoAnnotateWorker(QObject):
             raw = engine.run(rgb)
             anns = postprocess(raw, w, h)
             filtered = filter_by_modality(anns, self._modalities)
+            if self._active_kpt_names:
+                filtered = _reindex_keypoints_for_selection(filtered, self._active_kpt_names)
             lbl_path = derive_label_path(img_path)
             img_ann = ImageAnnotations(
                 image_path=str(img_path),
@@ -203,60 +224,6 @@ class _BulkAutoAnnotateWorker(QObject):
             write_label_file(img_ann)
             self.progress.emit(img_path.name)
         engine.unload()
-
-
-class _ReshuffleProgressDialog(QDialog):
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent, Qt.WindowType.FramelessWindowHint)
-        self.setModal(True)
-        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
-
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-
-        frame = QFrame()
-        frame.setObjectName("overlay_dialog")
-        frame.setFixedWidth(520)
-        inner = QVBoxLayout(frame)
-        inner.setContentsMargins(32, 28, 32, 28)
-        inner.setSpacing(16)
-
-        title = QLabel("Patience, Annotator.")
-        title.setObjectName("dialog_title")
-        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        inner.addWidget(title)
-
-        body = QLabel(
-            "The reshuffle command has been received and is underway.\n"
-            "This may take a moment — the best work is never rushed."
-        )
-        body.setObjectName("dialog_body")
-        body.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        body.setWordWrap(True)
-        inner.addWidget(body)
-
-        log_frame = QFrame()
-        log_frame.setObjectName("exec_log_frame")
-        self._log_layout = QVBoxLayout(log_frame)
-        self._log_layout.setContentsMargins(12, 8, 12, 8)
-        self._log_layout.setSpacing(3)
-        inner.addWidget(log_frame)
-
-        outer.addWidget(frame, alignment=Qt.AlignmentFlag.AlignCenter)
-
-    def add_log(self, message: str, state: str = "active") -> QLabel:
-        lbl = QLabel(message)
-        lbl.setObjectName("exec_log_line")
-        lbl.setProperty("state", state)
-        lbl.style().unpolish(lbl)
-        lbl.style().polish(lbl)
-        self._log_layout.addWidget(lbl)
-        return lbl
-
-    def update_log(self, lbl: QLabel, state: str) -> None:
-        lbl.setProperty("state", state)
-        lbl.style().unpolish(lbl)
-        lbl.style().polish(lbl)
 
 
 # ── Main window ───────────────────────────────────────────────────────────────
@@ -304,10 +271,10 @@ class MainWindow(QMainWindow):
         left_layout.setSpacing(0)
         self._file_explorer = FileExplorer()
         self._stats_panel = StatsPanel()
-        self._stats_panel.setMinimumHeight(180)
+        self._stats_panel.setMinimumHeight(STATS_PANEL_MIN_HEIGHT)
         left_layout.addWidget(self._file_explorer, stretch=2)
         left_layout.addWidget(self._stats_panel, stretch=1)
-        left_widget.setMinimumWidth(160)
+        left_widget.setMinimumWidth(SIDEBAR_MIN_WIDTH)
 
         center_widget = QWidget()
         center_layout = QVBoxLayout(center_widget)
@@ -324,10 +291,22 @@ class MainWindow(QMainWindow):
         right_layout.setSpacing(0)
         self._json_editor = JsonEditor()
         self._yaml_editor = YamlEditor()
-        self._yaml_editor.setMaximumHeight(200)
-        right_layout.addWidget(self._json_editor, stretch=2)
-        right_layout.addWidget(self._yaml_editor, stretch=1)
-        right_widget.setMinimumWidth(160)
+        self._prof_widget = ProfWidget()
+        self._right_splitter = QSplitter(Qt.Orientation.Vertical)
+        # Top → bottom: data.yaml · Prof.'s workshop · JSON editor.
+        self._right_splitter.addWidget(self._yaml_editor)
+        self._right_splitter.addWidget(self._prof_widget)
+        self._right_splitter.addWidget(self._json_editor)
+        self._right_splitter.setStretchFactor(0, 2)  # YAML
+        self._right_splitter.setStretchFactor(1, 2)  # Prof. (stretches with window)
+        self._right_splitter.setStretchFactor(2, 5)  # JSON
+        self._right_splitter.setCollapsible(0, False)
+        self._right_splitter.setCollapsible(1, False)
+        self._right_splitter.setCollapsible(2, False)
+        # Sizes are applied in `_apply_proportional_sizes` once the window
+        # has a concrete geometry (deferred to first showEvent).
+        right_layout.addWidget(self._right_splitter)
+        right_widget.setMinimumWidth(JSON_PANEL_MIN_WIDTH)
 
         self._splitter.addWidget(left_widget)
         self._splitter.addWidget(center_widget)
@@ -335,7 +314,15 @@ class MainWindow(QMainWindow):
         self._splitter.setStretchFactor(0, SPLITTER_SIDEBAR_STRETCH)
         self._splitter.setStretchFactor(1, SPLITTER_CANVAS_STRETCH)
         self._splitter.setStretchFactor(2, SPLITTER_JSON_STRETCH)
-        self._splitter.setSizes([SIDEBAR_DEFAULT_WIDTH, 999, JSON_PANEL_DEFAULT_WIDTH])
+        # Seed with screen-aware widths so the layout is reasonable even
+        # before `_apply_proportional_sizes` runs on showEvent.
+        screen = screen_for(self)
+        seed_w = min(screen.width, max(WINDOW_MIN_WIDTH, screen.width - 80))
+        sidebar_w, canvas_w, json_w = horizontal_splitter_sizes(seed_w)
+        self._splitter.setSizes([sidebar_w, canvas_w, json_w])
+        seed_h = min(screen.height, max(520, screen.height - 80))
+        yaml_h, prof_h, json_h = right_splitter_sizes(seed_h)
+        self._right_splitter.setSizes([yaml_h, prof_h, json_h])
 
         root_layout.addWidget(self._splitter, stretch=1)
 
@@ -361,6 +348,14 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
+        self._tutorial_btn = QPushButton("Tutorial")
+        self._tutorial_btn.setObjectName("help_btn")
+        layout.addWidget(self._tutorial_btn)
+
+        self._keybindings_btn = QPushButton("Keybindings")
+        self._keybindings_btn.setObjectName("help_btn")
+        layout.addWidget(self._keybindings_btn)
+
         self._help_btn = QPushButton("Help")
         self._help_btn.setObjectName("help_btn")
         layout.addWidget(self._help_btn)
@@ -371,11 +366,16 @@ class MainWindow(QMainWindow):
 
     def _connect_signals(self) -> None:
         self._create_btn.clicked.connect(self._on_create_dataset)
+        self._tutorial_btn.clicked.connect(self._replay_tutorial)
+        self._keybindings_btn.clicked.connect(self._show_keybindings)
         self._help_btn.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(APP_DOCS_URL)))
 
         # Ctrl+Del — bulk keypoint removal (replaces toolbar button)
         kpt_del_sc = QShortcut(QKeySequence("Ctrl+Del"), self)
         kpt_del_sc.activated.connect(self._on_bulk_kpt_edit)
+
+        new_dataset_sc = QShortcut(QKeySequence("Ctrl+Shift+N"), self)
+        new_dataset_sc.activated.connect(self._on_create_dataset)
 
         self._file_explorer.file_selected.connect(self._on_entry_selected)
         self._file_explorer.open_folder_requested.connect(self._on_open_folder)
@@ -451,10 +451,16 @@ class MainWindow(QMainWindow):
 
         img_path = Path(path)
         lbl_path = derive_label_path(img_path)
+        # Detect the split from the file path so val/ files don't land under train/.
+        parent_names = {p.name.lower() for p in img_path.parents}
+        if YOLO_VAL_DIR in parent_names:
+            split = YOLO_VAL_DIR
+        else:
+            split = YOLO_TRAIN_DIR
         entry = ImageEntry(
             image_path=img_path,
             label_path=lbl_path,
-            split=YOLO_TRAIN_DIR,
+            split=split,
             is_corrupted=False,
             has_label=lbl_path.exists() and lbl_path.stat().st_size > 0,
         )
@@ -472,7 +478,7 @@ class MainWindow(QMainWindow):
         self._yaml_editor.load(img_path.parent / "data.yaml")
         self._load_entry_by_index(0)
 
-    def _open_dataset(self, root: Path) -> None:  # noqa: C901
+    def _open_dataset(self, root: Path, from_wizard: bool = False) -> None:  # noqa: C901
         subdirs = [p.name for p in root.iterdir() if p.is_dir()]
         unexpected = [d for d in subdirs if d not in ("images", "labels")]
         if unexpected:
@@ -536,7 +542,7 @@ class MainWindow(QMainWindow):
             if dlg.exec() != dlg.DialogCode.Accepted:
                 return
             wizard = DatasetWizard([root], root.parent, self)
-            wizard.dataset_ready.connect(lambda p: self._open_dataset(Path(p)))
+            wizard.dataset_ready.connect(lambda p: self._open_dataset(Path(p), from_wizard=True))
             wizard.exec()
             return
 
@@ -562,6 +568,17 @@ class MainWindow(QMainWindow):
             return
 
         if diag.scenario == SCENARIO_STRUCTURED_LABELS_EMPTY:
+            # The wizard already collected kpt + auto/manual choices and may have
+            # legitimately produced a labels-free dataset (manual mode). Don't
+            # re-prompt — just open it.
+            if from_wizard:
+                self._start_index_load(root, flat=False, gen_yaml=False)
+                return
+            # Labels folder is empty for this dataset — always ask the annotator
+            # which kpts to use, regardless of whether data.yaml already records
+            # a set. Existing names (if any) are preselected in the dialog.
+            if not self._ensure_kpt_config_for_root(root, force=True):
+                return
             dlg = ConfirmDialog(
                 "No Annotations Found",
                 f"The dataset carries {diag.total_structured_images} image(s) "
@@ -576,8 +593,6 @@ class MainWindow(QMainWindow):
             if dlg.exec() == dlg.DialogCode.Accepted:
                 self._start_bulk_auto_annotate(root)
             else:
-                if not (root / "data.yaml").exists():
-                    generate_yaml(root)
                 self._start_index_load(root, flat=False, gen_yaml=False)
             return
 
@@ -594,9 +609,14 @@ class MainWindow(QMainWindow):
                 root.parent / f"{root.name}_reshuffled_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             )
 
-        self._reshuffle_dlg = _ReshuffleProgressDialog(self)
-        self._reshuffle_log_map: dict[str, QLabel] = {}
-        self._reshuffle_dlg.show()
+        self._progress_dlg = self._make_progress_dialog(
+            title="Reshuffling the dataset, Annotator.",
+            subtitle=(
+                "I will balance the splits and seal the new data.yaml. "
+                "Watch the runes — they record every step."
+            ),
+        )
+        self._progress_dlg.show()
 
         self._bg_thread = QThread()
         self._bg_worker = _ReshuffleWorker(root, dest)
@@ -613,18 +633,12 @@ class MainWindow(QMainWindow):
         self._bg_thread.start()
 
     def _on_reshuffle_log(self, message: str, state: str) -> None:
-        if not hasattr(self, "_reshuffle_dlg") or not hasattr(self, "_reshuffle_log_map"):
+        if getattr(self, "_progress_dlg", None) is None:
             return
-        if message not in self._reshuffle_log_map:
-            lbl = self._reshuffle_dlg.add_log(message, state)
-            self._reshuffle_log_map[message] = lbl
-        else:
-            self._reshuffle_dlg.update_log(self._reshuffle_log_map[message], state)
+        self._progress_dlg.status(message, state)
 
     def _on_reshuffle_done(self, new_root: Path) -> None:
-        if hasattr(self, "_reshuffle_dlg") and self._reshuffle_dlg is not None:
-            self._reshuffle_dlg.accept()
-            self._reshuffle_dlg = None
+        self._close_progress_dialog()
         self._start_index_load(new_root, flat=False, gen_yaml=False)
 
     def _start_bulk_auto_annotate(self, root: Path) -> None:
@@ -646,13 +660,28 @@ class MainWindow(QMainWindow):
             self._start_index_load(root, flat=False, gen_yaml=False)
             return
 
-        self._set_loading(True, "Auto-annotating dataset — this may take a while…")
+        self._progress_dlg = self._make_progress_dialog(
+            title="Auto-annotating the dataset, Annotator.",
+            subtitle=(
+                "I shall conjure labels for every image in turn. "
+                "This may take a while — patience is the truest craft."
+            ),
+        )
+        self._progress_dlg.add_log("Loading the inference engine…", "active")
+        self._progress_dlg.show()
+
         self._aa_thread = QThread()
-        self._aa_worker = _BulkAutoAnnotateWorker(root, modalities)
+        from bytemark.core.dataset.yaml_handler import load_yaml as _load_yaml_for_kpts
+
+        yaml_data = _load_yaml_for_kpts(root)
+        bulk_kpt_names = yaml_data.get("keypoint_names")
+        if not (isinstance(bulk_kpt_names, list) and bulk_kpt_names):
+            bulk_kpt_names = None
+        self._aa_worker = _BulkAutoAnnotateWorker(root, modalities, bulk_kpt_names)
         self._aa_worker.moveToThread(self._aa_thread)
         self._aa_thread.started.connect(self._aa_worker.run)
         self._aa_worker.progress.connect(
-            lambda name: self._status_bar.showMessage(f"⟳  Annotating {name}…"),
+            self._on_bulk_annotate_progress,
             Qt.ConnectionType.QueuedConnection,
         )
         self._aa_worker.finished.connect(
@@ -665,15 +694,36 @@ class MainWindow(QMainWindow):
         self._aa_thread.finished.connect(self._aa_thread.deleteLater)
         self._aa_thread.start()
 
+    def _on_bulk_annotate_progress(self, name: str) -> None:
+        if getattr(self, "_progress_dlg", None) is None:
+            return
+        # Mark the previous "loading engine" line as done on the first progress.
+        self._progress_dlg.update_log("Loading the inference engine…", "done")
+        self._progress_dlg.status(f"Annotating  {name}", "active")
+
     def _on_bulk_annotate_done(self, root: Path) -> None:
-        self._set_loading(False)
+        if getattr(self, "_progress_dlg", None) is not None:
+            self._progress_dlg.status("All images annotated — sealing labels…", "done")
+        self._close_progress_dialog()
         generate_yaml(root)
         self._start_index_load(root, flat=False, gen_yaml=False)
 
     def _start_index_load(self, root: Path, flat: bool, gen_yaml: bool) -> None:
         self._dataset_root = root
         self._pending_gen_yaml = gen_yaml
-        self._set_loading(True, "Indexing dataset...")
+        # If a progress dialog is already up (e.g. handed off from reshuffle /
+        # bulk auto-annotate), reuse it; otherwise open a fresh one.
+        if getattr(self, "_progress_dlg", None) is None:
+            self._progress_dlg = self._make_progress_dialog(
+                title="Reading the dataset, Annotator.",
+                subtitle=(
+                    "I am cataloguing every image and label in the halls. "
+                    "A moment — the index will be ready soon."
+                ),
+            )
+            self._progress_dlg.show()
+        self._progress_dlg.status("Indexing dataset…", "active")
+
         self._load_thread = QThread()
         self._load_worker = _DatasetIndexLoader(root, flat=flat)
         self._load_worker.moveToThread(self._load_thread)
@@ -688,7 +738,9 @@ class MainWindow(QMainWindow):
         self._load_thread.start()
 
     def _on_index_loaded(self, index: DatasetIndex) -> None:
-        self._set_loading(False)
+        if getattr(self, "_progress_dlg", None) is not None:
+            self._progress_dlg.status("Indexing dataset…", "done")
+        self._close_progress_dialog()
         self._dataset_index = index
         self._file_explorer.load_index(index)
         self._stats_panel.set_index(index)
@@ -696,6 +748,11 @@ class MainWindow(QMainWindow):
         yaml_path = self._dataset_root / "data.yaml"
         if self._pending_gen_yaml and not yaml_path.exists():
             generate_yaml(self._dataset_root)
+
+        # Images-only dataset whose yaml had no kpt config — ask which kpts to use.
+        if index.kpt_config_synthesized and index.annotated_count == 0:
+            self._prompt_kpt_selection_for_fresh_dataset()
+
         self._yaml_editor.load(yaml_path)
 
         self._is_git_repo = is_git_repo(self._dataset_root)
@@ -708,14 +765,59 @@ class MainWindow(QMainWindow):
         if index.entries:
             self._load_entry_by_index(0)
 
+    def _prompt_kpt_selection_for_fresh_dataset(self) -> None:
+        from bytemark.core.dataset.yaml_handler import load_yaml, save_yaml
+        from bytemark.ui.dialogs.kpt_selection_dialog import KptSelectionDialog
+
+        dlg = KptSelectionDialog(self, preselected=self._dataset_index.active_keypoint_names)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return
+        names = dlg.selected_names()
+        if not names:
+            return
+        self._dataset_index.active_keypoint_names = names
+        self._dataset_index.kpt_config_synthesized = False
+        data = load_yaml(self._dataset_root)
+        data["kpt_shape"] = [len(names), 3]
+        data["keypoint_names"] = names
+        save_yaml(self._dataset_root, data)
+
+    def _ensure_kpt_config_for_root(self, root: Path, force: bool = False) -> bool:
+        """Make sure data.yaml at `root` has a keypoint_names entry.
+
+        If `force` is True the prompt is always shown (used for empty-labels
+        datasets where the annotator must explicitly decide regardless of any
+        existing yaml). Otherwise an existing recorded keypoint_names short-
+        circuits the dialog.
+        Returns False if the user cancels (caller should abort).
+        """
+        from bytemark.core.dataset.yaml_handler import generate_yaml, load_yaml, save_yaml
+        from bytemark.ui.dialogs.kpt_selection_dialog import KptSelectionDialog
+
+        yaml_path = root / "data.yaml"
+        existing = load_yaml(root) if yaml_path.exists() else {}
+        names = existing.get("keypoint_names")
+        if not force and isinstance(names, list) and names:
+            return True
+
+        preselected = names if isinstance(names, list) and names else None
+        dlg = KptSelectionDialog(self, preselected=preselected)
+        if dlg.exec() != dlg.DialogCode.Accepted:
+            return False
+        chosen = dlg.selected_names()
+        if not chosen:
+            return False
+        if not yaml_path.exists():
+            generate_yaml(root)
+        data = load_yaml(root)
+        data["kpt_shape"] = [len(chosen), 3]
+        data["keypoint_names"] = chosen
+        save_yaml(root, data)
+        return True
+
     def _on_bg_error(self, msg: str) -> None:
         self._set_loading(False)
-        if hasattr(self, "_reshuffle_dlg") and self._reshuffle_dlg is not None:
-            try:
-                self._reshuffle_dlg.reject()
-            except RuntimeError:
-                pass
-            self._reshuffle_dlg = None
+        self._close_progress_dialog()
         ErrorDialog(
             f"Something went wrong, Annotator. The details are as follows:\n\n{msg}",
             self,
@@ -728,6 +830,71 @@ class MainWindow(QMainWindow):
             self._status_bar.showMessage(f"⟳  {message}")
         else:
             self._status_bar.clearMessage()
+
+    # ── Debounced autosave ───────────────────────────────────────────────────
+
+    def _schedule_autosave(self) -> None:
+        """Restart the debounce timer. Actual session write happens 600 ms
+        after the last annotation change — so a continuous drag/edit batch
+        produces exactly one write instead of dozens."""
+        from PySide6.QtCore import Qt as _Qt
+        from PySide6.QtCore import QTimer
+
+        timer = getattr(self, "_autosave_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.setTimerType(_Qt.TimerType.CoarseTimer)
+            timer.setInterval(600)
+            timer.timeout.connect(self._flush_autosave)
+            self._autosave_timer = timer
+        timer.start()
+
+    def _flush_autosave(self) -> None:
+        if self._dataset_root and self._dirty_map:
+            save_session(self._dataset_root, self._dirty_map)
+
+    # ── Prof. progress-dialog helpers ────────────────────────────────────────
+
+    def _make_progress_dialog(self, title: str, subtitle: str):
+        from bytemark.ui.dialogs.prof_progress_dialog import ProfProgressDialog
+
+        return ProfProgressDialog(title=title, subtitle=subtitle, parent=self)
+
+    def _close_progress_dialog(self) -> None:
+        dlg = getattr(self, "_progress_dlg", None)
+        if dlg is None:
+            return
+        self._progress_dlg = None
+        try:
+            dlg.accept()
+        except RuntimeError:
+            pass
+
+    def _show_keybindings(self) -> None:
+        from bytemark.ui.dialogs.keybindings_dialog import KeybindingsDialog
+
+        KeybindingsDialog(self).exec()
+
+    def _ensure_tutorial(self) -> "object":
+        if getattr(self, "_tutorial", None) is None:
+            from bytemark.ui.tutorial import TutorialWalkthrough
+
+            self._tutorial = TutorialWalkthrough(self)
+        return self._tutorial
+
+    def maybe_show_first_run_tutorial(self) -> None:
+        """Public entry-point called from main.py once the splash dismisses.
+        Shows the tutorial only if the annotator hasn't seen it yet."""
+        from bytemark.utils.prefs import get_pref
+
+        if get_pref("tutorial_seen", False):
+            return
+        self._ensure_tutorial().start()
+
+    def _replay_tutorial(self) -> None:
+        """Triggered by the 'Tutorial' top-bar button."""
+        self._ensure_tutorial().start()
 
     def _on_create_dataset(self) -> None:
         from bytemark.ui.dialogs.confirm_dialog import ConfirmDialog
@@ -758,7 +925,7 @@ class MainWindow(QMainWindow):
                 folders.append(Path(extra))
 
         wizard = DatasetWizard(folders, folders[0].parent, self)
-        wizard.dataset_ready.connect(lambda p: self._open_dataset(Path(p)))
+        wizard.dataset_ready.connect(lambda p: self._open_dataset(Path(p), from_wizard=True))
         wizard.exec()
 
     # ── Entry navigation ──────────────────────────────────────────────────────
@@ -777,7 +944,11 @@ class MainWindow(QMainWindow):
         if not entries:
             return
         idx = max(0, min(idx, len(entries) - 1))
-        if idx == self._current_idx and self._current_entry is not None:
+        if (
+            idx == self._current_idx
+            and self._current_entry is not None
+            and self._current_entry is entries[idx]
+        ):
             return
         self._autosave_current()
         self._current_idx = idx
@@ -790,14 +961,61 @@ class MainWindow(QMainWindow):
             else None
         )
         self._canvas.load_entry(self._current_entry, num_keypoints=nk, active_kpt_names=names)
+        self._schedule_prefetch_window()
+
+    def _entry_pos_in_split(self, entry: ImageEntry) -> tuple[list[ImageEntry], int] | None:
+        """Return (split_entries_list, position_within_split) for `entry`."""
+        if self._dataset_index is None:
+            return None
+        split_list = (
+            self._dataset_index.train_entries
+            if entry.split == YOLO_TRAIN_DIR
+            else self._dataset_index.val_entries
+        )
+        if not split_list:
+            return None
+        try:
+            return split_list, split_list.index(entry)
+        except ValueError:
+            return None
+
+    def _step_within_split(self, delta: int) -> None:
+        if self._dataset_index is None or self._current_entry is None:
+            return
+        info = self._entry_pos_in_split(self._current_entry)
+        if info is None:
+            return
+        split_list, pos = info
+        n = len(split_list)
+        next_entry = split_list[(pos + delta) % n]
+        try:
+            global_idx = self._dataset_index.entries.index(next_entry)
+        except ValueError:
+            return
+        self._load_entry_by_index(global_idx)
 
     def _navigate_next(self) -> None:
-        if self._dataset_index:
-            self._load_entry_by_index(self._current_idx + 1)
+        self._step_within_split(1)
 
     def _navigate_prev(self) -> None:
-        if self._dataset_index:
-            self._load_entry_by_index(self._current_idx - 1)
+        self._step_within_split(-1)
+
+    def _schedule_prefetch_window(self, half: int = 20) -> None:
+        """Tell the canvas to load the ±`half` neighbours within the current
+        split into its RGB cache. Wraps around at the split boundaries so a
+        sliding window keeps following the user's position."""
+        if self._dataset_index is None or self._current_entry is None:
+            return
+        info = self._entry_pos_in_split(self._current_entry)
+        if info is None:
+            return
+        split_list, pos = info
+        n = len(split_list)
+        paths: list[str] = []
+        for d in range(1, half + 1):
+            paths.append(str(split_list[(pos + d) % n].image_path))
+            paths.append(str(split_list[(pos - d) % n].image_path))
+        self._canvas.prefetch_paths(paths)
 
     # ── Canvas callbacks ──────────────────────────────────────────────────────
 
@@ -816,7 +1034,11 @@ class MainWindow(QMainWindow):
         if self._current_entry:
             self._file_explorer.mark_unsaved(str(self._current_entry.image_path))
         if self._dataset_root:
-            save_session(self._dataset_root, self._dirty_map)
+            # Debounce: the previous code called save_session on every
+            # annotation tick (e.g. every mouse-move while dragging a kpt),
+            # which JSON-serialised + wrote the entire dirty map each time.
+            # Defer the actual write so we only do it once the user pauses.
+            self._schedule_autosave()
 
     def _on_save(self, ann: ImageAnnotations) -> None:
         has_label = len(ann.instances) > 0
@@ -939,9 +1161,27 @@ class MainWindow(QMainWindow):
         if not modalities:
             return
 
-        self._set_loading(True, "Running auto-annotator on current image...")
+        img_name = self._current_entry.image_path.name
+        self._progress_dlg = self._make_progress_dialog(
+            title="Auto-annotating this image, Annotator.",
+            subtitle=(
+                "I shall examine the pixels and propose annotations. "
+                "You may accept or reject the result when I am done."
+            ),
+        )
+        self._progress_dlg.add_log("Loading the inference engine…", "active")
+        self._progress_dlg.add_log(f"Examining  {img_name}", "active")
+        self._progress_dlg.show()
+
         self._ai_thread = QThread()
-        self._ai_worker = _SingleAutoAnnotateWorker(self._current_entry, modalities)
+        active_kpt_names = (
+            self._dataset_index.active_keypoint_names
+            if self._dataset_index and self._dataset_index.active_keypoint_names
+            else None
+        )
+        self._ai_worker = _SingleAutoAnnotateWorker(
+            self._current_entry, modalities, active_kpt_names
+        )
         self._ai_worker.moveToThread(self._ai_thread)
         self._ai_thread.started.connect(self._ai_worker.run)
         self._ai_worker.done.connect(self._on_auto_done, Qt.ConnectionType.QueuedConnection)
@@ -954,11 +1194,17 @@ class MainWindow(QMainWindow):
         self._ai_thread.start()
 
     def _on_auto_annotate_failed(self, msg: str) -> None:
-        self._set_loading(False)
+        self._close_progress_dialog()
         ErrorDialog(f"The auto-annotator encountered a problem, Annotator:\n\n{msg}", self).exec()
 
     def _on_auto_done(self, new_annotations: list) -> None:
-        self._set_loading(False)
+        if getattr(self, "_progress_dlg", None) is not None:
+            self._progress_dlg.status("Loading the inference engine…", "done")
+            if self._current_entry is not None:
+                self._progress_dlg.status(
+                    f"Examining  {self._current_entry.image_path.name}", "done"
+                )
+        self._close_progress_dialog()
         if self._canvas._annotations is None:
             return
         old = list(self._canvas._annotations.instances)
@@ -967,26 +1213,57 @@ class MainWindow(QMainWindow):
     # ── Layout persistence ────────────────────────────────────────────────────
 
     def _restore_layout(self) -> None:
+        self._layout_restored_from_disk = False
         if LAYOUT_FILE.exists():
             try:
                 data = json.loads(LAYOUT_FILE.read_text())
                 if "splitter" in data:
                     self._splitter.setSizes(data["splitter"])
+                    self._layout_restored_from_disk = True
+                if "right_splitter" in data:
+                    self._right_splitter.setSizes(data["right_splitter"])
                 if "geometry" in data:
                     self.restoreGeometry(bytes.fromhex(data["geometry"]))
             except Exception:
                 pass
 
+    def _apply_proportional_sizes(self) -> None:
+        """Recompute splitter sizes from the actual window size. Skipped if
+        the user had saved layout from a previous session — we honour their
+        last-known split instead of overwriting it."""
+        if getattr(self, "_layout_restored_from_disk", False):
+            return
+        sidebar_w, canvas_w, json_w = horizontal_splitter_sizes(self.width())
+        self._splitter.setSizes([sidebar_w, canvas_w, json_w])
+        yaml_h, prof_h, json_h = right_splitter_sizes(self.height())
+        self._right_splitter.setSizes([yaml_h, prof_h, json_h])
+
+    def showEvent(self, event) -> None:  # noqa: D401
+        super().showEvent(event)
+        # Only run on the first real show — subsequent shows shouldn't
+        # forcibly re-divide the splitters the user has dragged.
+        if not getattr(self, "_first_show_done", False):
+            self._first_show_done = True
+            self._apply_proportional_sizes()
+
     def _save_layout(self) -> None:
         LAYOUT_FILE.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "splitter": self._splitter.sizes(),
+            "right_splitter": self._right_splitter.sizes(),
             "geometry": self.saveGeometry().toHex().data().decode(),
         }
         LAYOUT_FILE.write_text(json.dumps(data))
 
     def closeEvent(self, event) -> None:
+        # Cancel any pending debounced autosave — we're about to write
+        # synchronously below.
+        timer = getattr(self, "_autosave_timer", None)
+        if timer is not None and timer.isActive():
+            timer.stop()
         self._autosave_current()
+        # Flush any pending data.yaml edits the user hasn't Ctrl+S'd.
+        self._yaml_editor.flush_if_dirty()
         if self._dataset_root and self._dirty_map:
             save_session(self._dataset_root, self._dirty_map)
         self._save_layout()

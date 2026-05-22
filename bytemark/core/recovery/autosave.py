@@ -42,9 +42,15 @@ def save_session(root: str | Path, dirty: dict[str, ImageAnnotations]) -> bool:
         "annotations": {k: _ser_img(v) for k, v in dirty.items()},
     }
     try:
-        tmp = _path(root).with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        tmp.replace(_path(root))
+        target = _path(root)
+        tmp = target.with_suffix(".tmp")
+        # Compact JSON — the file is machine-only, no indent needed. Saves
+        # both serialization time and disk space on large dirty maps.
+        tmp.write_text(
+            json.dumps(payload, separators=(",", ":")),
+            encoding="utf-8",
+        )
+        tmp.replace(target)
         return True
     except OSError as exc:
         logger.error("Autosave failed: %s", exc)
@@ -83,7 +89,10 @@ def _ser_ann(a: Annotation) -> dict:
     if a.bbox:
         d["bbox"] = {"cx": a.bbox.cx, "cy": a.bbox.cy, "w": a.bbox.w, "h": a.bbox.h}
     if a.keypoints:
-        d["keypoints"] = [{"x": k.x, "y": k.y, "v": k.visibility} for k in a.keypoints]
+        d["keypoints"] = [
+            {"x": k.x, "y": k.y, "v": k.visibility} if k is not None else None
+            for k in a.keypoints
+        ]
     if a.mask:
         d["mask"] = {"points": a.mask.points}
     return d
@@ -107,7 +116,10 @@ def _deser_ann(d: dict) -> Annotation:
         bbox = BBox(b["cx"], b["cy"], b["w"], b["h"])
     kpts = None
     if "keypoints" in d:
-        kpts = [Keypoint(k["x"], k["y"], k.get("v", 2)) for k in d["keypoints"]]
+        kpts = [
+            Keypoint(k["x"], k["y"], k.get("v", 2)) if k is not None else None
+            for k in d["keypoints"]
+        ]
     mask = None
     if "mask" in d:
         mask = SegmentationMask(points=[tuple(p) for p in d["mask"]["points"]])

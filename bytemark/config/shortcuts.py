@@ -36,22 +36,60 @@ AUTOANNOTATE_HUMAN_WARNING = (
     "A generic multi-class model is coming soon — patience, Annotator."
 )
 
+SHORTCUT_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
+    (
+        "Dataset",
+        [
+            ("Create New Dataset", "Ctrl+Shift+N"),
+            ("Open Dataset Folder", "Ctrl+O"),
+            ("Open Single Image", "Ctrl+F"),
+            ("Save Annotation", "Ctrl+S"),
+            ("Undo", "Ctrl+Z"),
+            ("Bulk Keypoint Removal", "Ctrl+Del"),
+        ],
+    ),
+    (
+        "Drawing Modes",
+        [
+            ("Draw BBox", "B"),
+            ("Draw Keypoints (bbox first)", "K"),
+            ("Draw Segmentation (bbox first)", "S"),
+            ("Auto-annotate Current Image", "Ctrl+Shift+A  /  Ctrl+Y"),
+            ("Close Segmentation Mask", "Double-click"),
+            ("Skip Current Keypoint", "Right-click"),
+            ("Undo Last Segmentation Point", "Ctrl+Z (in S mode)"),
+        ],
+    ),
+    (
+        "Navigation",
+        [
+            ("Next Image", "D  /  →"),
+            ("Previous Image", "A  /  ←"),
+            ("Pan Canvas", "Middle Mouse"),
+            ("Zoom Canvas", "Scroll Wheel"),
+        ],
+    ),
+    (
+        "Selection & Editing",
+        [
+            ("Select Annotation", "Left Click"),
+            ("Nudge Selected Point", "Arrow Keys"),
+            ("Delete Selected Point / Instance", "Del"),
+            ("Deselect / Exit Mode", "Esc"),
+            ("Accept Auto-annotate Diff", "Enter"),
+            ("Reject Auto-annotate Diff", "Esc"),
+        ],
+    ),
+    (
+        "View Toggles",
+        [
+            ("Toggle BBox Visibility", "Ctrl+1"),
+            ("Toggle Keypoint Visibility", "Ctrl+2"),
+            ("Toggle Segmentation Visibility", "Ctrl+3"),
+        ],
+    ),
+]
+
 SHORTCUT_LABELS: dict[str, str] = {
-    "Draw BBox": "B",
-    "Draw Keypoints": "K",
-    "Draw Segmentation": "S",
-    "Save Annotation": "Ctrl+S",
-    "Undo": "Ctrl+Z",
-    "Auto-annotate Image": "Ctrl+Shift+A",
-    "Delete Selected Point": "Del",
-    "Nudge Point": "Arrow Keys",
-    "Next Image": "D",
-    "Previous Image": "A",
-    "Open Folder": "Ctrl+O",
-    "Confirm Dialog": "Enter",
-    "Cancel / Close": "Esc",
-    "Help": "F1",
-    "Toggle BBox View": "Ctrl+1",
-    "Toggle Keypoint View": "Ctrl+2",
-    "Toggle Segmentation View": "Ctrl+3",
+    label: keys for _, items in SHORTCUT_GROUPS for label, keys in items
 }

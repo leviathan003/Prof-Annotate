@@ -8,10 +8,11 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QSyntaxHighlighter, QTextCharFormat, QTextDocument
 from PySide6.QtWidgets import QFrame, QLabel, QPlainTextEdit, QVBoxLayout
 
+from bytemark.config.constants import JSON_RELOAD_INTERVAL_MS
 from bytemark.core.annotation.models import Annotation, ImageAnnotations
 
 
@@ -67,23 +68,33 @@ class JsonEditor(QFrame):
 
         self._highlighter = _JsonHighlighter(self._editor.document())
 
+        # Hot-reload timer: refreshes display while an instance is selected.
+        # Idle when nothing is selected so we don't burn timer wakeups for a
+        # no-op on every tick.
+        self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._timer.setInterval(JSON_RELOAD_INTERVAL_MS)
+        self._timer.timeout.connect(self._refresh_display)
+
     def show_instance(self, ann: ImageAnnotations, idx: int) -> None:
-        """Show JSON for a single selected instance."""
+        """Show JSON for a single selected instance — always forces a refresh."""
         self._annotations = ann
         self._selected_idx = idx
-        self._refresh_display()
+        self._refresh_display(force=True)
+        if not self._timer.isActive():
+            self._timer.start()
 
     def set_annotations(self, ann: ImageAnnotations) -> None:
-        """Called on annotation changes — only refreshes if an instance is already selected."""
+        """Called on annotation changes — refreshes unless editor currently has focus."""
         self._annotations = ann
         if self._selected_idx is not None:
-            self._refresh_display()
+            self._refresh_display(force=False)
 
     def clear_selection(self) -> None:
-        """Called when no instance is selected."""
         self._selected_idx = None
         self._suppress_update = True
         self._editor.clear()
+        self._timer.stop()
         self._suppress_update = False
 
     def clear(self) -> None:
@@ -99,6 +110,7 @@ class JsonEditor(QFrame):
         instances = self._annotations.instances
         if self._selected_idx >= len(instances):
             return
+        # Respect user typing unless forced
         if self._editor.hasFocus() and not force:
             return
         try:
@@ -114,7 +126,7 @@ class JsonEditor(QFrame):
             self._editor.setTextCursor(cursor)
             self._suppress_update = False
         except Exception:
-            pass
+            self._suppress_update = False
 
     def _on_user_edit(self) -> None:
         if self._suppress_update:

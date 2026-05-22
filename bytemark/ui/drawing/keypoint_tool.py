@@ -7,13 +7,59 @@ from __future__ import annotations
 from typing import Callable
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPen
-from PySide6.QtWidgets import QGraphicsEllipseItem, QGraphicsScene, QGraphicsSimpleTextItem
+from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QFontMetrics, QPainter, QPen, QPixmap
+from PySide6.QtWidgets import QGraphicsScene
 
 from bytemark.config.constants import NUM_KEYPOINTS
 from bytemark.config.skeleton import KEYPOINT_NAMES
 from bytemark.core.annotation.models import Keypoint
 from bytemark.utils.color import keypoint_color
+
+
+def _build_dot_cursor(label: str = "") -> QCursor:
+    dot_size = 14
+    r = 4
+    hotspot = dot_size // 2
+
+    font = QFont()
+    font.setPointSizeF(9.0)
+    font.setBold(True)
+    metrics = QFontMetrics(font)
+    text_w = metrics.horizontalAdvance(label) if label else 0
+    text_h = metrics.height()
+
+    pad_x = 6
+    pad_y = 2
+    total_w = dot_size + (pad_x + text_w + 4 if label else 0)
+    total_h = max(dot_size, text_h + pad_y * 2)
+
+    pix = QPixmap(total_w, total_h)
+    pix.fill(Qt.GlobalColor.transparent)
+    painter = QPainter(pix)
+    painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+    painter.setRenderHint(QPainter.RenderHint.TextAntialiasing, True)
+
+    # Dot
+    painter.setPen(QPen(Qt.GlobalColor.white, 1.2))
+    painter.setBrush(QBrush(keypoint_color()))
+    painter.drawEllipse(hotspot - r, total_h // 2 - r, r * 2, r * 2)
+
+    # Label
+    if label:
+        text_x = dot_size + pad_x
+        bg_rect_x = text_x - 3
+        bg_rect_y = (total_h - text_h) // 2 - 1
+        bg_rect_w = text_w + 6
+        bg_rect_h = text_h + 2
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QBrush(QColor(0, 0, 0, 180)))
+        painter.drawRoundedRect(bg_rect_x, bg_rect_y, bg_rect_w, bg_rect_h, 3, 3)
+        painter.setFont(font)
+        painter.setPen(QColor("#FFFFFF"))
+        painter.drawText(text_x, total_h // 2 + metrics.ascent() // 2 - 1, label)
+
+    painter.end()
+    return QCursor(pix, hotspot, total_h // 2)
 
 
 class KeypointTool:
@@ -38,7 +84,6 @@ class KeypointTool:
         self._num_active = len(self._active_names)
         self._current_idx = 0
         self._active = False
-        self._cursor_item = None
         self._zoom = 1.0
 
     def set_zoom(self, zoom: float) -> None:
@@ -50,7 +95,6 @@ class KeypointTool:
 
     def deactivate(self) -> None:
         self._active = False
-        self._remove_cursor()
 
     def is_active(self) -> bool:
         return self._active
@@ -61,33 +105,11 @@ class KeypointTool:
         return str(self._current_idx)
 
     def skip(self) -> None:
-        """Advance to the next keypoint without placing — triggered by right-click."""
+        """Advance past current keypoint without placing — right-click."""
         self._current_idx = (self._current_idx + 1) % self._num_active
 
     def mouse_move(self, scene_pos: QPointF) -> bool:
-        if not self._active:
-            return False
-        self._remove_cursor()
-        r = 3.0 / self._zoom
-        color = keypoint_color()
-        pen = QPen(Qt.GlobalColor.white, max(0.4, 0.7 / self._zoom))
-        ellipse = self._scene.addEllipse(
-            scene_pos.x() - r,
-            scene_pos.y() - r,
-            r * 2,
-            r * 2,
-            pen,
-            QBrush(color),
-        )
-        label_text = f"{self._current_idx:02d} · {self.current_name()}"
-        text = self._scene.addSimpleText(label_text)
-        font = QFont()
-        font.setPointSizeF(max(5.0, 8.0 / self._zoom))
-        text.setFont(font)
-        text.setBrush(QBrush(QColor("#FFFFFF")))
-        text.setPos(scene_pos.x() + r + 2 / self._zoom, scene_pos.y() - 5 / self._zoom)
-        self._cursor_item = (ellipse, text)
-        return True
+        return self._active
 
     def mouse_press(self, scene_pos: QPointF) -> bool:
         if not self._active:
@@ -95,15 +117,10 @@ class KeypointTool:
         kp = Keypoint.from_pixel(
             scene_pos.x(), scene_pos.y(), self._img_w, self._img_h, visibility=2
         )
-        self._on_placed(self._current_idx, kp)
+        placed_idx = self._current_idx
         self._current_idx = (self._current_idx + 1) % self._num_active
+        self._on_placed(placed_idx, kp)
         return True
 
     def mouse_release(self, scene_pos: QPointF) -> bool:
         return self._active
-
-    def _remove_cursor(self) -> None:
-        if self._cursor_item is not None:
-            for item in self._cursor_item:
-                self._scene.removeItem(item)
-            self._cursor_item = None

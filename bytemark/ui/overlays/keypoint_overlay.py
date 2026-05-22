@@ -78,52 +78,62 @@ class KeypointOverlay(QGraphicsItem):
         base_sk = skeleton_color(220)
         base_kp = keypoint_color()
         transform = painter.worldTransform()
+        iw = self._img_w
+        ih = self._img_h
+        kpts = self._keypoints
+        n_kp = len(kpts)
+        selected = self._selected_kpt
 
-        # Skeleton lines
+        # Skeleton lines — reuse a single QPen, only mutate its colour. This
+        # avoids allocating a new QColor + QPen per drawn segment.
+        sk_pen = QPen(QColor(base_sk), 1.2)
+        sk_pen.setCosmetic(True)
         for a, b in self._connections:
-            if a >= len(self._keypoints) or b >= len(self._keypoints):
+            if a >= n_kp or b >= n_kp:
                 continue
-            ka, kb = self._keypoints[a], self._keypoints[b]
+            ka, kb = kpts[a], kpts[b]
             if not (_kpt_visible(ka) and _kpt_visible(kb)):
                 continue
             alpha = 220 if (ka.visibility == 2 and kb.visibility == 2) else 130
             c = QColor(base_sk)
             c.setAlpha(alpha)
-            pen = QPen(c, 1.2)
-            pen.setCosmetic(True)
-            painter.setPen(pen)
+            sk_pen.setColor(c)
+            painter.setPen(sk_pen)
             painter.drawLine(
-                QPointF(ka.x * self._img_w, ka.y * self._img_h),
-                QPointF(kb.x * self._img_w, kb.y * self._img_h),
+                QPointF(ka.x * iw, ka.y * ih),
+                QPointF(kb.x * iw, kb.y * ih),
             )
 
-        # Keypoint dots
-        for i, kp in enumerate(self._keypoints):
+        # Keypoint dots — share the outline pen + label pen + label font.
+        outline_pen = QPen(QColor(0, 0, 0, 180), 0.8)
+        outline_pen.setCosmetic(True)
+        label_pen = QPen(QColor("#FFFFFF"))
+        label_pen.setCosmetic(True)
+        label_font: QFont | None = None  # built lazily only if a dot is selected
+
+        for i, kp in enumerate(kpts):
             if not _kpt_visible(kp):
                 continue
-            px, py = kp.x * self._img_w, kp.y * self._img_h
+            px, py = kp.x * iw, kp.y * ih
             screen = transform.map(QPointF(px, py))
-            r = _SELECTED_RADIUS if i == self._selected_kpt else _KPT_RADIUS
+            r = _SELECTED_RADIUS if i == selected else _KPT_RADIUS
             c = QColor(base_kp)
             if kp.visibility == 1:
                 c.setAlpha(180)
 
             painter.save()
             painter.resetTransform()
-            op = QPen(QColor(0, 0, 0, 180), 0.8)
-            op.setCosmetic(True)
-            painter.setPen(op)
+            painter.setPen(outline_pen)
             painter.setBrush(QBrush(c))
             painter.drawEllipse(screen, r, r)
 
-            if i == self._selected_kpt:
+            if i == selected:
                 name = self._kpt_names[i] if i < len(self._kpt_names) else str(i)
-                font = QFont()
-                font.setPointSizeF(8.5)
-                painter.setFont(font)
-                tp = QPen(QColor("#FFFFFF"))
-                tp.setCosmetic(True)
-                painter.setPen(tp)
+                if label_font is None:
+                    label_font = QFont()
+                    label_font.setPointSizeF(8.5)
+                painter.setFont(label_font)
+                painter.setPen(label_pen)
                 painter.drawText(screen + QPointF(r + 3, 4), f"{i:02d} {name}")
             painter.restore()
 
