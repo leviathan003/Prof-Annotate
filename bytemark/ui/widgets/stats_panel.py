@@ -84,6 +84,7 @@ class StatsPanel(QFrame):
         self.setObjectName("stats_panel")
         self._index: Optional[DatasetIndex] = None
         self._timer = QTimer(self)
+        self._timer.setTimerType(Qt.TimerType.CoarseTimer)
         self._timer.setInterval(STATS_RELOAD_INTERVAL_MS)
         self._timer.timeout.connect(self._schedule_update)
         self._thread: Optional[QThread] = None
@@ -121,6 +122,18 @@ class StatsPanel(QFrame):
         self._timer.stop()
         self._index = None
         self._clear_rows()
+
+    # ── Visibility — only poll while the panel is on-screen ────────────────
+
+    def hideEvent(self, event) -> None:  # noqa: D401
+        super().hideEvent(event)
+        self._timer.stop()
+
+    def showEvent(self, event) -> None:  # noqa: D401
+        super().showEvent(event)
+        # Restart only if we actually have a dataset to summarise.
+        if self._index is not None and not self._timer.isActive():
+            self._timer.start()
 
     def _schedule_update(self) -> None:
         if self._index is None or self._thread is not None:

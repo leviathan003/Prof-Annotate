@@ -46,6 +46,12 @@ class _FileModel(QAbstractItemModel):
             ("val", index.val_entries),
         ]
         self._unsaved: set[str] = set()
+        # path -> ImageEntry, built once. The legacy mark_saved walked the
+        # entire entries list per call (O(N) per save). With 10k images that
+        # was 10k str comparisons every time the user hit Ctrl+S.
+        self._entry_by_path: dict[str, ImageEntry] = {
+            str(e.image_path): e for e in index.entries
+        }
 
     def mark_unsaved(self, image_path: str) -> None:
         self._unsaved.add(image_path)
@@ -53,12 +59,10 @@ class _FileModel(QAbstractItemModel):
 
     def mark_saved(self, image_path: str, has_label: bool = True) -> None:
         self._unsaved.discard(image_path)
-        # Update the entry's has_label so color reflects actual on-disk state
-        for _, entries in self._groups:
-            for entry in entries:
-                if str(entry.image_path) == image_path:
-                    entry.has_label = has_label
-                    break
+        # O(1) lookup — keeps the row's colour accurate after save.
+        entry = self._entry_by_path.get(image_path)
+        if entry is not None:
+            entry.has_label = has_label
         self._emit_data_changed()
 
     def _emit_data_changed(self) -> None:
@@ -96,12 +100,12 @@ class _FileModel(QAbstractItemModel):
         if is_group:
             if role == Qt.ItemDataRole.DisplayRole:
                 name, entries = self._groups[index.row()]
-                return f"|--{name}  [{len(entries)}]"
+                return f"|--{name.upper()}  [{len(entries)}]"
             if role == Qt.ItemDataRole.ForegroundRole:
-                return QBrush(QColor("#555555"))
+                return QBrush(QColor("#E0E0E0"))
             if role == Qt.ItemDataRole.FontRole:
                 f = QFont()
-                f.setWeight(QFont.Weight.Medium)
+                f.setWeight(QFont.Weight.Bold)
                 return f
             return None
 
@@ -158,29 +162,18 @@ class FileExplorer(QFrame):
 
         # ── Root label ────────────────────────────────────────────────────────
         self._root_label = QLabel("")
-        self._root_label.setObjectName("dimmed")
+        self._root_label.setObjectName("explorer_root")
         self._root_label.setContentsMargins(8, 4, 8, 2)
         layout.addWidget(self._root_label)
 
         # ── Stacked: placeholder hint  ←→  tree ───────────────────────────────
         self._stack = QStackedWidget()
 
-        # Page 0 — hint shown before any dataset is opened
+        # Page 0 — empty placeholder shown before any dataset is opened
         hint_page = QWidget()
         hint_layout = QVBoxLayout(hint_page)
         hint_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         hint_layout.setSpacing(6)
-
-        hint_open = QLabel("Ctrl+O  ·  open dataset")
-        hint_open.setObjectName("dimmed")
-        hint_open.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        hint_file = QLabel("Ctrl+F  ·  open single file")
-        hint_file.setObjectName("dimmed")
-        hint_file.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        hint_layout.addWidget(hint_open)
-        hint_layout.addWidget(hint_file)
 
         # Page 1 — tree view
         self._tree = QTreeView()

@@ -1,6 +1,7 @@
 """
 bytemark/ui/dialogs/modality_prompt.py
-Checkbox prompt for selecting annotation modalities.
+Checkbox prompt for selecting annotation modalities — Prof. presents the
+choice and adapts to the active screen.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from PySide6.QtWidgets import (
 
 from bytemark.config.constants import AUTOANNOTATE_HUMAN_WARNING
 from bytemark.core.annotation.models import Modality
+from bytemark.ui.dialogs._prof_layout import build_prof_column, screen_aware_size
 
 
 class ModalityPrompt(QDialog):
@@ -31,21 +33,29 @@ class ModalityPrompt(QDialog):
 
         frame = QFrame()
         frame.setObjectName("overlay_dialog")
-        frame.setFixedWidth(480)
+        chosen_w = screen_aware_size(frame, preferred_w=600, min_w=340, parent=parent)
+        frame.setMinimumWidth(chosen_w)
 
-        inner = QVBoxLayout(frame)
-        inner.setContentsMargins(28, 24, 28, 24)
-        inner.setSpacing(14)
+        outer_h = QHBoxLayout(frame)
+        outer_h.setContentsMargins(22, 20, 22, 20)
+        outer_h.setSpacing(18)
+
+        prof_col, _ = build_prof_column(parent, size="compact")
+        outer_h.addWidget(prof_col)
+
+        inner = QVBoxLayout()
+        inner.setSpacing(12)
 
         t = QLabel(title)
         t.setObjectName("dialog_title")
-        t.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        t.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        t.setWordWrap(True)
         inner.addWidget(t)
 
         if show_warning:
             w = QLabel(AUTOANNOTATE_HUMAN_WARNING)
             w.setObjectName("dialog_warning")
-            w.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            w.setAlignment(Qt.AlignmentFlag.AlignLeft)
             w.setWordWrap(True)
             inner.addWidget(w)
 
@@ -63,17 +73,40 @@ class ModalityPrompt(QDialog):
             inner.addWidget(cb)
             self._checks[modality] = cb
 
+        inner.addStretch(1)
+
         btn_row = QHBoxLayout()
-        ok_btn = QPushButton("> Proceed")
-        ok_btn.setObjectName("primary_button")
-        ok_btn.clicked.connect(self.accept)
+        btn_row.addStretch(1)
         cancel_btn = QPushButton("Cancel")
+        cancel_btn.setObjectName("arcane_button_dim")
+        cancel_btn.setAutoDefault(False)
         cancel_btn.clicked.connect(self.reject)
-        btn_row.addWidget(ok_btn)
+        ok_btn = QPushButton("> Proceed")
+        ok_btn.setObjectName("arcane_button")
+        ok_btn.setDefault(True)
+        ok_btn.setAutoDefault(True)
+        ok_btn.clicked.connect(self.accept)
         btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
         inner.addLayout(btn_row)
+        self._focus_target = ok_btn
+
+        outer_h.addLayout(inner, stretch=1)
 
         outer.addWidget(frame, alignment=Qt.AlignmentFlag.AlignCenter)
 
     def selected_modalities(self) -> set[Modality]:
         return {m for m, cb in self._checks.items() if cb.isChecked()}
+
+    def keyPressEvent(self, event) -> None:  # noqa: D401
+        if event.key() == Qt.Key.Key_Escape:
+            self.reject()
+            return
+        if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.accept()
+            return
+        super().keyPressEvent(event)
+
+    def showEvent(self, event) -> None:  # noqa: D401
+        super().showEvent(event)
+        self._focus_target.setFocus(Qt.FocusReason.OtherFocusReason)

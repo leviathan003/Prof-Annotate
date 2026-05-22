@@ -8,19 +8,35 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
+from bytemark.config.constants import (
+    HANDLE_BC,
+    HANDLE_BL,
+    HANDLE_BR,
+    HANDLE_ML,
+    HANDLE_MOVE,
+    HANDLE_MR,
+    HANDLE_NONE,
+    HANDLE_TC,
+    HANDLE_TL,
+    HANDLE_TR,
+)
 from bytemark.core.annotation.models import BBox
 from bytemark.utils.color import class_color
 
-HANDLE_NONE = -1
-HANDLE_MOVE = 0
-HANDLE_TL = 1
-HANDLE_TC = 2
-HANDLE_TR = 3
-HANDLE_ML = 4
-HANDLE_MR = 5
-HANDLE_BL = 6
-HANDLE_BC = 7
-HANDLE_BR = 8
+# Re-export for legacy `from bytemark.ui.overlays.bbox_overlay import HANDLE_*` callers.
+__all__ = [
+    "HANDLE_NONE",
+    "HANDLE_MOVE",
+    "HANDLE_TL",
+    "HANDLE_TC",
+    "HANDLE_TR",
+    "HANDLE_ML",
+    "HANDLE_MR",
+    "HANDLE_BL",
+    "HANDLE_BC",
+    "HANDLE_BR",
+    "BBoxOverlay",
+]
 
 _HANDLE_R = 4.5
 _HIT_R = 8.0

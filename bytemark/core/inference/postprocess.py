@@ -73,10 +73,10 @@ def postprocess(
             return (py - pad_y) / (scale * orig_h)
 
         bbox = BBox(
-            cx=max(0.0, min(1.0, inv_x(cx))),
-            cy=max(0.0, min(1.0, inv_y(cy))),
-            w=max(0.0, min(1.0, bw / (scale * orig_w))),
-            h=max(0.0, min(1.0, bh / (scale * orig_h))),
+            cx=float(max(0.0, min(1.0, inv_x(cx)))),
+            cy=float(max(0.0, min(1.0, inv_y(cy)))),
+            w=float(max(0.0, min(1.0, bw / (scale * orig_w)))),
+            h=float(max(0.0, min(1.0, bh / (scale * orig_h)))),
         )
 
         keypoints: list[Keypoint] = []
@@ -86,8 +86,8 @@ def postprocess(
             kv = int(pred[kpt_offset + i * 3 + 2])
             keypoints.append(
                 Keypoint(
-                    x=max(0.0, min(1.0, inv_x(kx))),
-                    y=max(0.0, min(1.0, inv_y(ky))),
+                    x=float(max(0.0, min(1.0, inv_x(kx)))),
+                    y=float(max(0.0, min(1.0, inv_y(ky)))),
                     visibility=kv,
                 )
             )

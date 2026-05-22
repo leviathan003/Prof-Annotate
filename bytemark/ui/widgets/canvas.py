@@ -7,13 +7,23 @@ from __future__ import annotations
 import copy
 from typing import Optional
 
-from PySide6.QtCore import QEvent, QObject, QPointF, QRectF, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
+from PySide6.QtCore import (
+    QEvent,
+    QObject,
+    QPointF,
+    QRectF,
+    QRunnable,
+    Qt,
+    QThreadPool,
+    Signal,
+)
+from PySide6.QtGui import QKeyEvent, QMouseEvent, QPixmap, QWheelEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGraphicsPixmapItem,
     QGraphicsScene,
     QGraphicsView,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QVBoxLayout,
@@ -64,21 +74,56 @@ def _to_scene(view: QGraphicsView, event: QMouseEvent) -> QPointF:
     return view.mapToScene(event.position().toPoint())
 
 
-class _ImageLoader(QObject):
-    loaded = Signal(object, int, int)
-    failed = Signal()
+class _LoaderSignals(QObject):
+    """Cross-thread signal sink for image-load tasks. RGB array stays as numpy
+    so the worker thread never touches QPixmap (which must live on the GUI
+    thread). Generation is checked by the slot to drop stale results."""
 
-    def __init__(self, path: str) -> None:
+    done = Signal(int, str, object)  # generation, path, rgb_array_or_None
+
+
+class _ImageLoadTask(QRunnable):
+    def __init__(self, generation: int, path: str, signals: _LoaderSignals) -> None:
         super().__init__()
+        self._gen = generation
         self._path = path
+        self._signals = signals
+        self.setAutoDelete(True)
 
-    def run(self) -> None:
+    def run(self) -> None:  # noqa: D401
         rgb = load_image_rgb(self._path)
-        if rgb is None:
-            self.failed.emit()
+        self._signals.done.emit(self._gen, self._path, rgb)
+
+
+class _RgbCache:
+    """Ordered-dict LRU keyed by image path, holding decoded RGB numpy arrays."""
+
+    def __init__(self, capacity: int) -> None:
+        from collections import OrderedDict
+
+        self._cache: "OrderedDict[str, object]" = OrderedDict()
+        self._capacity = capacity
+
+    def get(self, key: str):
+        if key not in self._cache:
+            return None
+        self._cache.move_to_end(key)
+        return self._cache[key]
+
+    def put(self, key: str, val) -> None:
+        if key in self._cache:
+            self._cache.move_to_end(key)
+            self._cache[key] = val
             return
-        h, w = rgb.shape[:2]
-        self.loaded.emit(numpy_to_qpixmap(rgb), w, h)
+        self._cache[key] = val
+        while len(self._cache) > self._capacity:
+            self._cache.popitem(last=False)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self._cache
+
+    def clear(self) -> None:
+        self._cache.clear()
 
 
 class AnnotationCanvas(QFrame):
@@ -152,16 +197,20 @@ class AnnotationCanvas(QFrame):
 
         nav = QWidget()
         nav.setFixedHeight(28)
-        nav_layout = QHBoxLayout(nav)
+        nav_layout = QGridLayout(nav)
         nav_layout.setContentsMargins(8, 0, 8, 0)
+        nav_layout.setColumnStretch(0, 1)
+        nav_layout.setColumnStretch(1, 0)
+        nav_layout.setColumnStretch(2, 1)
         self._nav_label = QLabel("< 0/0 >")
         self._nav_label.setObjectName("nav_counter")
         self._draw_mode_label = QLabel("")
         self._draw_mode_label.setObjectName("draw_mode_indicator")
         self._draw_mode_label.hide()
-        nav_layout.addWidget(self._nav_label)
-        nav_layout.addStretch()
-        nav_layout.addWidget(self._draw_mode_label)
+        nav_layout.addWidget(self._nav_label, 0, 1, alignment=Qt.AlignmentFlag.AlignCenter)
+        nav_layout.addWidget(
+            self._draw_mode_label, 0, 2, alignment=Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
+        )
         layout.addWidget(nav)
 
         self._scene = QGraphicsScene(self)
@@ -180,19 +229,6 @@ class AnnotationCanvas(QFrame):
         self._view.installEventFilter(self)
 
         self._pixmap_item: Optional[QGraphicsPixmapItem] = None
-        self._placeholder = self._scene.addText(
-            "image viewer / annotation editor window\n\n"
-            "Open a dataset folder to begin.\n\n"
-            "• B — bbox  • K — keypoints (bbox first)  • S — segmentation (bbox first)\n"
-            "• Ctrl+S — save  • Ctrl+Z — undo  • Ctrl+Shift+A — auto-annotate\n"
-            "• A / D or ← / → — previous / next image\n"
-            "• Click annotation — isolate & drag points  • Esc — deselect / exit mode\n"
-            "• Middle mouse — pan  • Scroll — zoom\n"
-            "• S mode: single click = add point, double click = close mask\n"
-            "• K mode: right-click = skip current keypoint\n"
-            "• Ctrl+Del — bulk keypoint removal"
-        )
-        self._placeholder.setDefaultTextColor(QColor("#2A2A2A"))
         self._set_border("unannotated")
 
     # ── Public API ────────────────────────────────────────────────────────────
@@ -225,11 +261,21 @@ class AnnotationCanvas(QFrame):
 
     def show_diff(self, old: list[Annotation], new: list[Annotation]) -> None:
         self._clear_diff()
-        self._diff_item = DiffOverlay(old, new, self._img_w, self._img_h)
+        self._diff_item = DiffOverlay(
+            old, new, self._img_w, self._img_h, active_kpt_names=self._active_kpt_names
+        )
+        self._diff_item.setZValue(10)  # always above bbox/seg/kpt overlays
         self._scene.addItem(self._diff_item)
+        # Dim the existing overlays so the diff reads clearly on top.
+        for item in self._bbox_items + self._kpt_items + self._seg_items:
+            item.setOpacity(0.25)
         self._draw_mode_label.setText("[ DIFF PREVIEW ]  Enter = accept  ·  Esc = reject")
         self._draw_mode_label.setStyleSheet("color: #FFD700;")
         self._draw_mode_label.show()
+        # Reclaim focus — after _set_loading(False) re-enables the canvas,
+        # tab-order focus lands on the first top-bar button instead of the
+        # view, so Enter would activate it instead of accepting the diff.
+        self._view.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def accept_diff(self) -> None:
         if self._diff_item is not None:
@@ -237,9 +283,10 @@ class AnnotationCanvas(QFrame):
             self._annotations.instances = list(self._diff_item._new)
             self._clear_diff()
             self._rebuild_overlays()
-            self._mark_dirty()
+            # Deselect first so instance_deselected fires before we re-select
             self._deselect()
-            # Issue 1: update JSON panel immediately after accepting diff
+            self._mark_dirty()
+            # Select first instance and force JSON panel update
             if self._annotations.instances:
                 self._select_instance(0)
                 self.instance_selected.emit(self._annotations, 0)
@@ -256,18 +303,89 @@ class AnnotationCanvas(QFrame):
 
     # ── Image loading ─────────────────────────────────────────────────────────
 
+    # ── Pixmap cache + thread pool (lazy init) ────────────────────────────────
+
+    def _ensure_loader(self) -> None:
+        if getattr(self, "_rgb_cache", None) is not None:
+            return
+        # Cache capacity adapts to the active screen so low-end devices
+        # don't carry 60 decoded RGB arrays in RAM (≈ hundreds of MB on
+        # 4K images). Mid-tier laptops use 40, desktops 60.
+        from bytemark.utils.ui_scaling import form_factor
+
+        ff = form_factor()
+        if ff == "tiny":
+            cache_cap = 20
+        elif ff == "small":
+            cache_cap = 30
+        elif ff == "medium":
+            cache_cap = 40
+        else:
+            cache_cap = 60
+        self._rgb_cache = _RgbCache(capacity=cache_cap)
+        self._load_signals = _LoaderSignals()
+        self._load_signals.done.connect(self._on_load_done, Qt.ConnectionType.QueuedConnection)
+        self._load_gen = 0  # incremented on every foreground request
+        self._foreground_path: Optional[str] = None
+        self._pool = QThreadPool(self)
+        # Two slots — one for the foreground request, one for opportunistic prefetch.
+        # The OS file cache plus the LRU above handle the rest.
+        self._pool.setMaxThreadCount(2)
+        self._inflight: set[str] = set()
+
     def _start_image_load(self, path: str, ann: ImageAnnotations) -> None:
+        self._ensure_loader()
         self._pending_ann = ann
-        self._thread = QThread()
-        self._loader = _ImageLoader(path)
-        self._loader.moveToThread(self._thread)
-        self._thread.started.connect(self._loader.run)
-        self._loader.loaded.connect(self._on_image_loaded, Qt.ConnectionType.QueuedConnection)
-        self._loader.failed.connect(self._on_image_failed, Qt.ConnectionType.QueuedConnection)
-        self._loader.loaded.connect(self._thread.quit)
-        self._loader.failed.connect(self._thread.quit)
-        self._thread.finished.connect(self._thread.deleteLater)
-        self._thread.start()
+        self._load_gen += 1
+        gen = self._load_gen
+        self._foreground_path = path
+
+        cached = self._rgb_cache.get(path)
+        if cached is not None:
+            # Synchronous paint — bypass the worker entirely.
+            self._render_rgb(gen, path, cached)
+            return
+
+        if path not in self._inflight:
+            self._inflight.add(path)
+            self._pool.start(_ImageLoadTask(gen, path, self._load_signals))
+
+    def prefetch_paths(self, paths: list[str]) -> None:
+        """Kick off background loads for `paths` that aren't already cached
+        or already queued. Safe to call rapidly — duplicates are ignored.
+
+        Skipped when the window isn't visible — no point burning disk I/O
+        and decoder cycles for images the annotator isn't looking at."""
+        window = self.window()
+        if window is not None and not window.isVisible():
+            return
+        self._ensure_loader()
+        for path in paths:
+            if not path or path in self._rgb_cache or path in self._inflight:
+                continue
+            self._inflight.add(path)
+            # generation 0 = prefetch (never matches the foreground gen, so
+            # the slot only stores into the cache and does not repaint).
+            self._pool.start(_ImageLoadTask(0, path, self._load_signals))
+
+    def _on_load_done(self, gen: int, path: str, rgb) -> None:
+        self._inflight.discard(path)
+        if rgb is None:
+            # Foreground load failed — surface the failure border.
+            if gen == self._load_gen and path == self._foreground_path:
+                self._on_image_failed()
+            return
+        self._rgb_cache.put(path, rgb)
+        # Only render if this completion still matches the latest foreground request.
+        if gen == self._load_gen and path == self._foreground_path:
+            self._render_rgb(gen, path, rgb)
+
+    def _render_rgb(self, gen: int, path: str, rgb) -> None:
+        if gen != self._load_gen or path != self._foreground_path:
+            return
+        h, w = rgb.shape[:2]
+        pixmap = numpy_to_qpixmap(rgb)
+        self._on_image_loaded(pixmap, w, h)
 
     def _on_image_loaded(self, pixmap, w: int, h: int) -> None:
         self._img_w = w
@@ -325,8 +443,14 @@ class AnnotationCanvas(QFrame):
     # ── Overlays ──────────────────────────────────────────────────────────────
 
     def _rebuild_overlays(self) -> None:
-        for item in self._bbox_items + self._kpt_items + self._seg_items:
-            self._scene.removeItem(item)
+        scene = self._scene
+        # Avoid the temporary list allocation from `a + b + c`.
+        for item in self._bbox_items:
+            scene.removeItem(item)
+        for item in self._kpt_items:
+            scene.removeItem(item)
+        for item in self._seg_items:
+            scene.removeItem(item)
         self._bbox_items.clear()
         self._kpt_items.clear()
         self._seg_items.clear()
@@ -337,30 +461,33 @@ class AnnotationCanvas(QFrame):
         if not self._annotations:
             return
 
+        sel = self._selected_instance
+        iw, ih = self._img_w, self._img_h
+        akn = self._active_kpt_names
         for i, inst in enumerate(self._annotations.instances):
             if inst.has_bbox():
-                item = BBoxOverlay(inst.bbox, self._img_w, self._img_h, inst.class_id, i)
+                item = BBoxOverlay(inst.bbox, iw, ih, inst.class_id, i)
                 item.setZValue(1)
-                item.set_selected(i == self._selected_instance)
-                self._scene.addItem(item)
+                item.set_selected(i == sel)
+                scene.addItem(item)
                 self._bbox_items.append(item)
                 self._bbox_inst_map.append(i)
             if inst.has_keypoints():
                 item = KeypointOverlay(
                     inst.keypoints,
-                    self._img_w,
-                    self._img_h,
+                    iw,
+                    ih,
                     i,
-                    active_kpt_names=self._active_kpt_names,
+                    active_kpt_names=akn,
                 )
                 item.setZValue(2)
-                self._scene.addItem(item)
+                scene.addItem(item)
                 self._kpt_items.append(item)
                 self._kpt_inst_map.append(i)
             if inst.has_mask():
-                item = SegmentationOverlay(inst.mask, self._img_w, self._img_h, i)
+                item = SegmentationOverlay(inst.mask, iw, ih, i)
                 item.setZValue(1)
-                self._scene.addItem(item)
+                scene.addItem(item)
                 self._seg_items.append(item)
                 self._seg_inst_map.append(i)
 
@@ -371,15 +498,29 @@ class AnnotationCanvas(QFrame):
 
     def _apply_selection_visibility(self) -> None:
         sel = self._selected_instance
-        for j, item in enumerate(self._bbox_items):
-            show = Modality.BBOX in self._visible_modalities
-            item.setVisible(show if sel is None else (self._bbox_inst_map[j] == sel and show))
-        for j, item in enumerate(self._kpt_items):
-            show = Modality.KEYPOINTS in self._visible_modalities
-            item.setVisible(show if sel is None else (self._kpt_inst_map[j] == sel and show))
-        for j, item in enumerate(self._seg_items):
-            show = Modality.SEGMENTATION in self._visible_modalities
-            item.setVisible(show if sel is None else (self._seg_inst_map[j] == sel and show))
+        # Hoist the modality-membership checks out of the loops — previously
+        # recomputed once per overlay item (3*N set lookups per call).
+        vis = self._visible_modalities
+        bbox_on = Modality.BBOX in vis
+        kpt_on = Modality.KEYPOINTS in vis
+        seg_on = Modality.SEGMENTATION in vis
+        if sel is None:
+            for item in self._bbox_items:
+                item.setVisible(bbox_on)
+            for item in self._kpt_items:
+                item.setVisible(kpt_on)
+            for item in self._seg_items:
+                item.setVisible(seg_on)
+        else:
+            bb_map = self._bbox_inst_map
+            kp_map = self._kpt_inst_map
+            sg_map = self._seg_inst_map
+            for j, item in enumerate(self._bbox_items):
+                item.setVisible(bbox_on and bb_map[j] == sel)
+            for j, item in enumerate(self._kpt_items):
+                item.setVisible(kpt_on and kp_map[j] == sel)
+            for j, item in enumerate(self._seg_items):
+                item.setVisible(seg_on and sg_map[j] == sel)
 
     def _refresh_instance_overlays(self, inst_idx: int) -> None:
         if self._annotations is None:
@@ -403,12 +544,23 @@ class AnnotationCanvas(QFrame):
         if self._diff_item is not None:
             self._scene.removeItem(self._diff_item)
             self._diff_item = None
+            for item in self._bbox_items + self._kpt_items + self._seg_items:
+                item.setOpacity(1.0)
 
     def _update_kpt_mode_label(self) -> None:
         if self._active_draw_mode == "kpts" and self._kpt_tool:
-            idx = self._kpt_tool._current_idx
-            name = self._kpt_tool.current_name()
-            self._draw_mode_label.setText(f"[ KPTS MODE ]  →  {idx:02d} · {name}")
+            self._draw_mode_label.setText("[ KPTS MODE ]")
+            self._refresh_kpt_cursor()
+
+    def _refresh_kpt_cursor(self) -> None:
+        if self._active_draw_mode != "kpts" or self._kpt_tool is None:
+            return
+        from bytemark.ui.drawing.keypoint_tool import _build_dot_cursor
+
+        label = f"{self._kpt_tool._current_idx:02d} · {self._kpt_tool.current_name()}"
+        viewport = self._view.viewport()
+        viewport.unsetCursor()
+        viewport.setCursor(_build_dot_cursor(label))
 
     def _create_seg_preview(self) -> None:
         if self._seg_preview_item is not None:
@@ -431,24 +583,15 @@ class AnnotationCanvas(QFrame):
         mask = SegmentationMask(points=[(px / self._img_w, py / self._img_h) for px, py in pts])
         self._seg_preview_item.update_mask(mask)
 
-    # ── Warning flash ─────────────────────────────────────────────────────────
+    # ── Warning popups ────────────────────────────────────────────────────────
 
     def _show_warning(self, msg: str) -> None:
-        self._draw_mode_label.setText(f"⚠  {msg}")
-        self._draw_mode_label.setStyleSheet("color: #FF4444;")
-        self._draw_mode_label.show()
-        QTimer.singleShot(2500, self._clear_warning)
+        """Surface a transient annotation error as a proper popup, Annotator.
+        Replaces the older inline draw-mode flash."""
+        from bytemark.ui.dialogs.error_dialog import ErrorDialog
 
-    def _clear_warning(self) -> None:
-        if getattr(self, "_violation_active", False):
-            return
-        self._draw_mode_label.setStyleSheet("")
-        if self._active_draw_mode == "kpts":
-            self._update_kpt_mode_label()
-        elif self._active_draw_mode:
-            self._draw_mode_label.setText(f"[ {self._active_draw_mode.upper()} MODE ]")
-        else:
-            self._draw_mode_label.hide()
+        # Pick a sensible top-level parent so the popup centers on the window.
+        ErrorDialog(msg, parent=self.window()).exec()
 
     # ── Border / dirty ────────────────────────────────────────────────────────
 
@@ -511,6 +654,8 @@ class AnnotationCanvas(QFrame):
             item.set_violated(self._bbox_inst_map[j] in indices_set)
 
     def _clear_violations(self) -> None:
+        """Wipe the violation state — clears the red bbox highlights and
+        resets the draw-mode label to its normal indicator."""
         self._violation_active = False
         for item in self._bbox_items:
             item.set_violated(False)
@@ -523,10 +668,12 @@ class AnnotationCanvas(QFrame):
             self._draw_mode_label.hide()
 
     def _show_persistent_warning(self, msg: str) -> None:
+        """Flag a violation that persists until corrected — the offending
+        bboxes glow red and the Professor explains the issue in a popup."""
+        from bytemark.ui.dialogs.error_dialog import ErrorDialog
+
         self._violation_active = True
-        self._draw_mode_label.setText(f"⚠  {msg}")
-        self._draw_mode_label.setStyleSheet("color: #FF4444;")
-        self._draw_mode_label.show()
+        ErrorDialog(msg, parent=self.window()).exec()
 
     def _save(self) -> None:
         if self._annotations is None:
@@ -571,6 +718,9 @@ class AnnotationCanvas(QFrame):
         inst = self._annotations.instances[self._selected_instance]
         if inst.keypoints is None:
             inst.keypoints = [None] * self._num_keypoints
+        # Pad up if the instance came from a file with fewer kpts than the dataset default.
+        while len(inst.keypoints) <= kpt_idx:
+            inst.keypoints.append(None)
         self._undo.push(self._annotations)
         inst.keypoints[kpt_idx] = kp
         self._rebuild_overlays()
@@ -630,6 +780,7 @@ class AnnotationCanvas(QFrame):
         self._active_draw_mode = None
         self._draw_mode_label.setStyleSheet("")
         self._draw_mode_label.hide()
+        self._view.viewport().unsetCursor()
 
     def _toggle_draw_mode(self, mode: str) -> None:
         if self._active_draw_mode == mode:
@@ -721,23 +872,26 @@ class AnnotationCanvas(QFrame):
     # ── Event handling ────────────────────────────────────────────────────────
 
     def eventFilter(self, obj, event) -> bool:
-        if obj is self._view or obj is self._view.viewport():
+        is_viewport = obj is self._view.viewport()
+        is_view = obj is self._view
+        if is_viewport or is_view:
             t = event.type()
-            if t == QEvent.Type.Wheel:
+            if t == QEvent.Type.Wheel and is_viewport:
                 self._handle_wheel(event)
                 return True
             if t == QEvent.Type.KeyPress:
                 if self._handle_key(event):
                     return True
-            if t == QEvent.Type.MouseButtonDblClick:
-                if self._handle_double_click(event):
-                    return True
-            if t == QEvent.Type.MouseButtonPress:
-                self._handle_mouse_press(event)
-            if t == QEvent.Type.MouseMove:
-                self._handle_mouse_move(event)
-            if t == QEvent.Type.MouseButtonRelease:
-                self._handle_mouse_release(event)
+            if is_viewport:
+                if t == QEvent.Type.MouseButtonDblClick:
+                    if self._handle_double_click(event):
+                        return True
+                if t == QEvent.Type.MouseButtonPress:
+                    self._handle_mouse_press(event)
+                if t == QEvent.Type.MouseMove:
+                    self._handle_mouse_move(event)
+                if t == QEvent.Type.MouseButtonRelease:
+                    self._handle_mouse_release(event)
         return super().eventFilter(obj, event)
 
     def _handle_wheel(self, event) -> None:
