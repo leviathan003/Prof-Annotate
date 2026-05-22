@@ -21,7 +21,7 @@ def main() -> int:
     from PySide6.QtGui import QFont, QFontDatabase, QIcon
     from PySide6.QtWidgets import QApplication
 
-    from bytemark.config.constants import (
+    from src.config.constants import (
         APP_NAME,
         APP_VERSION,
         FONTS_DIR,
@@ -104,9 +104,9 @@ def main() -> int:
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    from bytemark.ui.dialogs.splash_screen import SplashScreen
-    from bytemark.ui.main_window import MainWindow
-    from bytemark.ui.prof_watcher import install_prof_watcher
+    from src.ui.dialogs.splash_screen import SplashScreen
+    from src.ui.main_window import MainWindow
+    from src.ui.prof_watcher import install_prof_watcher
 
     # Holds a hard reference so Qt doesn't garbage-collect the filter.
     _prof_watcher = install_prof_watcher(app)  # noqa: F841
