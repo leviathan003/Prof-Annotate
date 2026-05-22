@@ -1,5 +1,5 @@
 PySide6>=6.6.0
-onnxruntime-gpu>=1.17.0  # uncomment if CUDA available
+onnxruntime-gpu>=1.17.0
 numpy>=1.26.0
 opencv-python-headless>=4.9.0
 Pillow>=10.2.0
