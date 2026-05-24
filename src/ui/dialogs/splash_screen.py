@@ -101,9 +101,7 @@ class SplashScreen(QWidget):
 
         portrait_wrap = QWidget()
         portrait_wrap.setLayout(portrait_col)
-        portrait_wrap.setFixedWidth(
-            {"full": 240, "compact": 150, "tiny": 96}[portrait_tier]
-        )
+        portrait_wrap.setFixedWidth({"full": 240, "compact": 150, "tiny": 96}[portrait_tier])
         outer.addWidget(portrait_wrap)
 
         # ── Branding column ──────────────────────────────────────────────────

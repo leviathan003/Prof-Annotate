@@ -102,7 +102,7 @@ FAREWELLS: list[str] = [
 ]
 
 SPLASH_LINES: list[str] = [
-    "✦ ByteMark ✦",
+    "✦ GPL V2 ✦",
     "An arcane workbench for those who tame raw data.",
     "I am Prof. Annotate — your guide through the labelling craft.",
 ]

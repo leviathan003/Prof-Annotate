@@ -209,7 +209,10 @@ class AnnotationCanvas(QFrame):
         self._draw_mode_label.hide()
         nav_layout.addWidget(self._nav_label, 0, 1, alignment=Qt.AlignmentFlag.AlignCenter)
         nav_layout.addWidget(
-            self._draw_mode_label, 0, 2, alignment=Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight
+            self._draw_mode_label,
+            0,
+            2,
+            alignment=Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignRight,
         )
         layout.addWidget(nav)
 

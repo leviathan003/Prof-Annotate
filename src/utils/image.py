@@ -41,7 +41,8 @@ def load_image_rgb(path: str | Path) -> Optional[np.ndarray]:
     try:
         import cv2
 
-        bgr = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        raw = np.fromfile(str(path), dtype=np.uint8)
+        bgr = cv2.imdecode(raw, cv2.IMREAD_COLOR)
         if bgr is None:
             return None
         return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
