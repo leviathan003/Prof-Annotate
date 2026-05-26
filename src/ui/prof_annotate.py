@@ -24,65 +24,47 @@ PROF_SHADOW = "#08040C"
 # Rendered in a monospace label. Lines kept identical length (29 cols) so the
 # figure stays aligned in every QFontMetrics environment.
 PROF_PORTRAIT = r"""
-              ✦
-             ╱╲
-            ╱✧ ╲
-           ╱ ⟁  ╲
-          ╱  ☾   ╲
-         ╱ ✦   ✦  ╲
-        ╱  ◆ ◇ ◆   ╲
-       ╱▁▁▁▁▁▁▁▁▁▁▁▁╲
-      ╱▒▒▒▒▒▒▒▒▒▒▒▒▒▒╲
-     ▐░░╲▔▔▔▔▔▔▔▔▔▔╱░░▌
-     ▐░░░╲          ╱░░▌
-     ▐░░░ ◉   ⟁   ◉ ░░░▌
-     ▐░░░  ╲      ╱  ░░▌
-     ▐░░░   ╶◊◊╴     ░░▌
-     ▐░░░  ╲▂▂▂▂▂╱   ░░▌
-      ╲░░  ╲▒▒▒▒▒╱    ░╱
-       ╲▔▔▔▔▔▔▔▔▔▔▔▔▔╱
-        ▟█▙   ▼   ▟█▙
-       ▟███▙ ▟█▙ ▟███▙
-      ▟█ ⚜ █████████ ⚜ █▙
-     ▟███ ◈   ⚡⚡⚡   ◈ ███▙
-     ▌███   ━━━━━━━━━   ███▐
-     ▌████   ✧ ◇ ✧    ████▐
-     ▌█████  ⚜⚜⚜⚜⚜   █████▐
-     ▌███████████████████▐
-      ╲▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓╱
-       ╱╲              ╱╲
-      ╱  ╲            ╱  ╲
-     ╱    ╲          ╱    ╲
+          ✦
+         ▐█▌
+        ▐███▌
+       ▐█████▌
+      ▐███████▌
+     ▐█████████▌
+    ██████████████
+    ▐░░░░░░░░░░░░▌
+    ▐░   ◕    ◕  ░▌
+    ▐░     ══     ░▌
+    ▐░   ██████   ░▌
+    ▐░░░░░░░░░░░░▌
+     ▀▀▀▀▀▀▀▀▀▀▀▀
+    ▐████████████▌
+    ▐█  ✦  ══  ✦ █▌
+    ▐████████████▌
+   ▐██░░░░░░░░░░██▌
+   ▐██████████████▌
+   ▐███▌      ▐███▌
 """.strip("\n")
 
-
-# A compact 10-line variant for tight surfaces (tutorial step popups,
-# the workshop panel). Same character set as the full portrait.
 PROF_PORTRAIT_SMALL = r"""
-       ✦
-      ╱╲
-     ╱✧ ╲
-    ╱ ⟁  ╲
-   ╱  ☾   ╲
-  ╱▁▁▁▁▁▁▁▁╲
-  ▐ ◉ ⟁ ◉ ▌
-  ▐  ╶◊╴   ▌
-  ▐ ╲▂▂▂╱  ▌
- ▟███████████▙
- ▌◈  ⚡⚡⚡  ◈▐
- ▌  ⚜━━━⚜   ▐
+      ✦
+     ▐█▌
+    ▐███▌
+   █████████
+   ▐░ ◕  ◕ ░▌
+   ▐░   ══   ░▌
+   ▐░ ██████ ░▌
+    ▀███████▀
+   ▐█ ✦══✦  █▌
+   ▐█████████▌
 """.strip("\n")
 
-
-# A 6-line tiny variant for very tight surfaces — small laptops, tablets,
-# or a workshop section that's been squashed by an aggressive splitter.
 PROF_PORTRAIT_TINY = r"""
-  ╱▔╲
- ╱⟁  ╲
- ◉ ◉
- ╲▽╱
-▟███▙
-⚡◈⚡
+  ▐█▌
+ ▐███▌
+ █◕  ◕█
+ █  ═ █
+ █████
+ █ ✦ █
 """.strip("\n")
 
 
@@ -126,106 +108,96 @@ TUTORIAL_OUTRO = (
 # appears alive — blinking, focusing, casting. Every line is the same width.
 
 PROF_FRAMES: list[str] = [
-    # Frame A — observing (eyes open, calm)
+    # Frame A — normal
     r"""
-       ✦
-      ╱╲
-     ╱✧ ╲
-    ╱ ⟁  ╲
-   ╱  ☾   ╲
-  ╱▁▁▁▁▁▁▁▁╲
-  ▐ ◉ ⟁ ◉ ▌
-  ▐  ╶◊╴   ▌
-  ▐ ╲▂▂▂╱  ▌
- ▟███████████▙
- ▌◈  ⚡⚡⚡  ◈▐
- ▌  ⚜━━━⚜   ▐
+      ✦
+     ▐█▌
+    ▐███▌
+   █████████
+   ▐░ ◕  ◕ ░▌
+   ▐░  ════  ░▌
+   ▐░ ██████ ░▌
+    ▀███████▀
+   ▐█ ✦══✦  █▌
+   ▐█████████▌
 """.strip("\n"),
-    # Frame B — focused (eyes narrowed, drawing)
+    # Frame B — looking up
     r"""
-       ✦
-      ╱╲
-     ╱✧ ╲
-    ╱ ⟁  ╲
-   ╱  ☾   ╲
-  ╱▁▁▁▁▁▁▁▁╲
-  ▐ ◎ ⟁ ◎ ▌
-  ▐  ╶◇╴   ▌
-  ▐ ╲▽▽▽╱  ▌
- ▟███████████▙
- ▌✦  ⚡✧⚡  ✦▐
- ▌  ⚜━━━⚜   ▐
+      ✦
+     ▐█▌
+    ▐███▌
+   █████████
+   ▐░ ◔  ◔ ░▌
+   ▐░  ════  ░▌
+   ▐░ ██████ ░▌
+    ▀███████▀
+   ▐█ ✦══✦  █▌
+   ▐█████████▌
 """.strip("\n"),
-    # Frame C — casting (stars flare, sigils bright)
+    # Frame C — focused
     r"""
-       ✧
-      ╱╲
-     ╱✦ ╲
-    ╱ ⟁  ╲
-   ╱  ☆   ╲
-  ╱▁▁▁▁▁▁▁▁╲
-  ▐ ◉ ✦ ◉ ▌
-  ▐  ╶◈╴   ▌
-  ▐ ╲▂▂▂╱  ▌
- ▟███████████▙
- ▌⚡  ✧✧✧  ⚡▐
- ▌  ⚜━━━⚜   ▐
+      ✦
+     ▐█▌
+    ▐███▌
+   █████████
+   ▐░ ◉  ◉ ░▌
+   ▐░  ════  ░▌
+   ▐░ ██████ ░▌
+    ▀███████▀
+   ▐█ ✦══✦  █▌
+   ▐█████████▌
 """.strip("\n"),
-    # Frame D — meditating (eyes closed, silent)
+    # Frame D — blinking
     r"""
-       ·
-      ╱╲
-     ╱◇ ╲
-    ╱ ⟁  ╲
-   ╱  ☾   ╲
-  ╱▁▁▁▁▁▁▁▁╲
-  ▐ ‾ ⟁ ‾ ▌
-  ▐  ╶◊╴   ▌
-  ▐ ╲▂▂▂╱  ▌
- ▟███████████▙
- ▌◇  ◈◈◈  ◇▐
- ▌  ⚜━━━⚜   ▐
+      ✦
+     ▐█▌
+    ▐███▌
+   █████████
+   ▐░ ─  ─ ░▌
+   ▐░  ════  ░▌
+   ▐░ ██████ ░▌
+    ▀███████▀
+   ▐█ ✦══✦  █▌
+   ▐█████████▌
 """.strip("\n"),
 ]
 
-
-# Tiny animation frames — used when the workshop / popup column is short.
 PROF_FRAMES_TINY: list[str] = [
-    # A — observing
+    # A — normal
     r"""
-  ╱▔╲
- ╱⟁  ╲
- ◉ ◉
- ╲▽╱
-▟███▙
-⚡◈⚡
+  ▐█▌
+ ▐███▌
+ █◕  ◕█
+ █ ══ █
+ █████
+ █ ✦ █
 """.strip("\n"),
-    # B — focused
+    # B — looking up
     r"""
-  ╱▔╲
- ╱⟁  ╲
- ◎ ◎
- ╲▽╱
-▟███▙
-✦◈✦
+  ▐█▌
+ ▐███▌
+ █◔  ◔█
+ █ ══ █
+ █████
+ █ ✦ █
 """.strip("\n"),
-    # C — casting
+    # C — focused
     r"""
-  ╱▔╲
- ╱✦  ╲
- ◉ ◉
- ╲▽╱
-▟███▙
-⚡✧⚡
+  ▐█▌
+ ▐███▌
+ █◉  ◉█
+ █ ══ █
+ █████
+ █ ✦ █
 """.strip("\n"),
-    # D — meditating
+    # D — blinking
     r"""
-  ╱▔╲
- ╱⟁  ╲
- ‾ ‾
- ╲▽╱
-▟███▙
-◈◇◈
+  ▐█▌
+ ▐███▌
+ █─  ─█
+ █ ══ █
+ █████
+ █ ✦ █
 """.strip("\n"),
 ]
 
