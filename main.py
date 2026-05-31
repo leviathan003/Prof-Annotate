@@ -8,7 +8,14 @@ from pathlib import Path
 
 
 def _setup_paths() -> None:
-    root = Path(__file__).resolve().parent
+    import sys
+    from pathlib import Path
+
+    if getattr(sys, "frozen", False):
+        root = Path(sys._MEIPASS)
+    else:
+        root = Path(__file__).resolve().parent
+
     if str(root) not in sys.path:
         sys.path.insert(0, str(root))
 
