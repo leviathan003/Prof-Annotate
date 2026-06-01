@@ -146,7 +146,7 @@ class _ReshuffleWorker(QObject):
 
 
 class _DatasetIndexLoader(QObject):
-    finished = Signal(object)
+    chunk_ready = Signal(object, bool)  # (partial_index, is_final)
     failed = Signal(str)
 
     def __init__(self, root: Path, flat: bool = False) -> None:
@@ -159,9 +159,13 @@ class _DatasetIndexLoader(QObject):
             if self._flat:
                 from src.core.dataset.loader import load_flat_dataset
 
-                self.finished.emit(load_flat_dataset(self._root))
+                idx = load_flat_dataset(self._root)
+                self.chunk_ready.emit(idx, True)
             else:
-                self.finished.emit(load_dataset(self._root))
+                from src.core.dataset.loader import stream_dataset
+
+                for partial_index, is_final in stream_dataset(self._root):
+                    self.chunk_ready.emit(partial_index, is_final)
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -711,15 +715,12 @@ class MainWindow(QMainWindow):
     def _start_index_load(self, root: Path, flat: bool, gen_yaml: bool) -> None:
         self._dataset_root = root
         self._pending_gen_yaml = gen_yaml
-        # If a progress dialog is already up (e.g. handed off from reshuffle /
-        # bulk auto-annotate), reuse it; otherwise open a fresh one.
+        self._dataset_index = None
+
         if getattr(self, "_progress_dlg", None) is None:
             self._progress_dlg = self._make_progress_dialog(
                 title="Reading the dataset, Annotator.",
-                subtitle=(
-                    "I am cataloguing every image and label in the halls. "
-                    "A moment — the index will be ready soon."
-                ),
+                subtitle="Streaming entries — the index will populate progressively.",
             )
             self._progress_dlg.show()
         self._progress_dlg.status("Indexing dataset…", "active")
@@ -728,33 +729,44 @@ class MainWindow(QMainWindow):
         self._load_worker = _DatasetIndexLoader(root, flat=flat)
         self._load_worker.moveToThread(self._load_thread)
         self._load_thread.started.connect(self._load_worker.run)
-        self._load_worker.finished.connect(
-            self._on_index_loaded, Qt.ConnectionType.QueuedConnection
+        self._load_worker.chunk_ready.connect(
+            self._on_chunk_ready, Qt.ConnectionType.QueuedConnection
         )
         self._load_worker.failed.connect(self._on_bg_error, Qt.ConnectionType.QueuedConnection)
-        self._load_worker.finished.connect(self._load_thread.quit)
-        self._load_worker.failed.connect(self._load_thread.quit)
+        self._load_worker.chunk_ready.connect(
+            lambda _, is_final: self._load_thread.quit() if is_final else None,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._load_thread.finished.connect(self._load_thread.deleteLater)
         self._load_thread.start()
 
-    def _on_index_loaded(self, index: DatasetIndex) -> None:
-        if getattr(self, "_progress_dlg", None) is not None:
-            self._progress_dlg.status("Indexing dataset…", "done")
-        self._close_progress_dialog()
+    def _on_chunk_ready(self, index: "DatasetIndex", is_final: bool) -> None:
         self._dataset_index = index
+
+        # Update file explorer + stats on every chunk so UI feels live
         self._file_explorer.load_index(index)
         self._stats_panel.set_index(index)
+
+        if getattr(self, "_progress_dlg", None) is not None:
+            total = index.total
+            self._progress_dlg.status(f"Indexed {total} images…", "active")
+
+        if not is_final:
+            return
+
+        # --- final chunk only below ---
+        if getattr(self, "_progress_dlg", None) is not None:
+            self._progress_dlg.status(f"Indexed {index.total} images…", "done")
+        self._close_progress_dialog()
 
         yaml_path = self._dataset_root / "data.yaml"
         if self._pending_gen_yaml and not yaml_path.exists():
             generate_yaml(self._dataset_root)
 
-        # Images-only dataset whose yaml had no kpt config — ask which kpts to use.
         if index.kpt_config_synthesized and index.annotated_count == 0:
             self._prompt_kpt_selection_for_fresh_dataset()
 
         self._yaml_editor.load(yaml_path)
-
         self._is_git_repo = is_git_repo(self._dataset_root)
         self._git_root = find_repo_root(self._dataset_root) if self._is_git_repo else None
 

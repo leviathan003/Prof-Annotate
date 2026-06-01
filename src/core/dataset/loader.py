@@ -192,9 +192,9 @@ def _apply_yaml_kpt_config(index: DatasetIndex) -> None:
     if isinstance(shape, list) and len(shape) == 2 and isinstance(shape[0], int):
         n = shape[0]
         default_names = [KEYPOINT_NAMES[i] for i in sorted(KEYPOINT_NAMES)]
-        synthesized = default_names[:n] if n <= len(default_names) else [
-            f"kpt_{i}" for i in range(n)
-        ]
+        synthesized = (
+            default_names[:n] if n <= len(default_names) else [f"kpt_{i}" for i in range(n)]
+        )
         index.active_keypoint_names = synthesized
         data["keypoint_names"] = synthesized
         save_yaml(index.root, data)
@@ -285,3 +285,50 @@ def load_dataset(root: str | Path) -> DatasetIndex:
     index.freeze()
     logger.info("Indexed %d images in %s", index.total, root)
     return index
+
+
+def stream_dataset(
+    root: str | Path,
+    chunk_size: int = 500,
+):
+    """Generator that yields DatasetIndex chunks for progressive UI updates.
+    Each yield is a partial index — caller accumulates entries."""
+    root = Path(root).resolve()
+    index = DatasetIndex(root=root)
+    yaml = root / DATA_YAML_FILENAME
+    if yaml.exists():
+        index.yaml_path = yaml
+
+    chunk: list[ImageEntry] = []
+
+    for split in (YOLO_TRAIN_DIR, YOLO_VAL_DIR):
+        img_dir = root / YOLO_IMAGES_SUBDIR / split
+        if not img_dir.is_dir():
+            continue
+        lbl_dir = root / YOLO_LABELS_SUBDIR / split
+        label_stems = _build_label_stem_set(lbl_dir)
+        for entry in _scan_images(img_dir):
+            name = entry.name
+            dot = name.rfind(".")
+            stem = name[:dot]
+            lbl_path = lbl_dir / (stem + YOLO_LABEL_EXT)
+            chunk.append(
+                ImageEntry(
+                    image_path=Path(entry.path),
+                    label_path=lbl_path,
+                    split=split,
+                    is_corrupted=False,
+                    has_label=stem in label_stems,
+                )
+            )
+            if len(chunk) >= chunk_size:
+                index.entries.extend(chunk)
+                chunk = []
+                yield index, False  # partial
+
+    if chunk:
+        index.entries.extend(chunk)
+
+    _apply_yaml_kpt_config(index)
+    index.freeze()
+    yield index, True  # final
