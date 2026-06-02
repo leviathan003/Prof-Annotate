@@ -49,9 +49,7 @@ class _FileModel(QAbstractItemModel):
         # path -> ImageEntry, built once. The legacy mark_saved walked the
         # entire entries list per call (O(N) per save). With 10k images that
         # was 10k str comparisons every time the user hit Ctrl+S.
-        self._entry_by_path: dict[str, ImageEntry] = {
-            str(e.image_path): e for e in index.entries
-        }
+        self._entry_by_path: dict[str, ImageEntry] = {str(e.image_path): e for e in index.entries}
 
     def mark_unsaved(self, image_path: str) -> None:
         self._unsaved.add(image_path)
@@ -195,7 +193,9 @@ class FileExplorer(QFrame):
         self._root_label.setText(index.root.name)
         self._model = _FileModel(index, self)
         self._tree.setModel(self._model)
-        self._tree.expandAll()
+        # Expand only the two group rows, never recurse into children
+        for row in range(self._model.rowCount()):
+            self._tree.expand(self._model.index(row, 0))
         self._stack.setCurrentIndex(1)
 
     def mark_unsaved(self, image_path: str) -> None:

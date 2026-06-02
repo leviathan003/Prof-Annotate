@@ -20,8 +20,27 @@ def _setup_paths() -> None:
         sys.path.insert(0, str(root))
 
 
+def _preload_pil() -> None:
+    """Force PIL.Image and all plugins to load in the main thread
+    before any worker threads start. Prevents frozen-import races."""
+    try:
+        import PIL.BmpImagePlugin
+        import PIL.GifImagePlugin
+        import PIL.Image
+        import PIL.JpegImagePlugin
+        import PIL.PngImagePlugin
+        import PIL.PpmImagePlugin
+        import PIL.TiffImagePlugin
+        import PIL.WebPImagePlugin
+
+        PIL.Image.init()  # registers all format plugins
+    except Exception:
+        pass
+
+
 def main() -> int:
     _setup_paths()
+    _preload_pil()
     os.environ.setdefault("QT_AUTO_SCREEN_SCALE_FACTOR", "1")
 
     from PySide6.QtCore import Qt

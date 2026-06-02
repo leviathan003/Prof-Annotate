@@ -1,7 +1,6 @@
 """
 bytemark/utils/image.py
-Image loading, corruption detection, path helpers.
-Heavy ops belong on worker threads — never the UI thread.
+Image loading using Pillow only. cv2 is never imported here.
 """
 
 from __future__ import annotations
@@ -15,21 +14,36 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
+def _pil_image_module():
+    """Import PIL.Image robustly whether frozen or not."""
+    import importlib
+
+    try:
+        mod = importlib.import_module("PIL.Image")
+        return mod
+    except ImportError:
+        pass
+    try:
+        import os
+        import sys
+
+        # When frozen, PIL submodules may need explicit path injection
+        if getattr(sys, "frozen", False):
+            pil_path = os.path.join(sys._MEIPASS, "PIL")
+            if pil_path not in sys.path:
+                sys.path.insert(0, sys._MEIPASS)
+        mod = importlib.import_module("PIL.Image")
+        return mod
+    except ImportError as exc:
+        raise ImportError(f"PIL.Image unavailable: {exc}") from exc
+
+
 def is_image_corrupted(path: str | Path) -> bool:
     path = Path(path)
     if not path.exists():
         return True
     try:
-        import cv2
-
-        img = cv2.imread(str(path), cv2.IMREAD_GRAYSCALE)
-        if img is not None:
-            return False
-    except Exception:
-        pass
-    try:
-        from PIL import Image as PilImage
-
+        PilImage = _pil_image_module()
         with PilImage.open(path) as img:
             img.verify()
         return False
@@ -39,13 +53,9 @@ def is_image_corrupted(path: str | Path) -> bool:
 
 def load_image_rgb(path: str | Path) -> Optional[np.ndarray]:
     try:
-        import cv2
-
-        raw = np.fromfile(str(path), dtype=np.uint8)
-        bgr = cv2.imdecode(raw, cv2.IMREAD_COLOR)
-        if bgr is None:
-            return None
-        return cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+        PilImage = _pil_image_module()
+        with PilImage.open(path) as img:
+            return np.array(img.convert("RGB"), dtype=np.uint8)
     except Exception as exc:
         logger.error("load_image_rgb failed %s: %s", path, exc)
         return None
@@ -53,8 +63,7 @@ def load_image_rgb(path: str | Path) -> Optional[np.ndarray]:
 
 def image_dimensions(path: str | Path) -> Optional[tuple[int, int]]:
     try:
-        from PIL import Image as PilImage
-
+        PilImage = _pil_image_module()
         with PilImage.open(path) as img:
             return img.size  # (w, h)
     except Exception:

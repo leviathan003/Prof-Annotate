@@ -716,6 +716,8 @@ class MainWindow(QMainWindow):
         self._dataset_root = root
         self._pending_gen_yaml = gen_yaml
         self._dataset_index = None
+        self._current_entry = None
+        self._current_idx = 0
 
         if getattr(self, "_progress_dlg", None) is None:
             self._progress_dlg = self._make_progress_dialog(
@@ -746,15 +748,20 @@ class MainWindow(QMainWindow):
         if getattr(self, "_progress_dlg", None) is not None:
             self._progress_dlg.status(f"Indexed {index.total} images…", "active")
 
-        # Only update the heavy widgets on final chunk or every 2000 entries
-        # to avoid rebuilding the tree model on every 500-entry chunk
-        if is_final or index.total % 2000 < 500:
-            self._file_explorer.load_index(index)
-            self._stats_panel.set_index(index)
-
         if not is_final:
+            # First chunk: show UI immediately
+            if self._current_entry is None and index.entries:
+                self._file_explorer.load_index(index)
+                self._stats_panel.set_index(index)
+                self._yaml_editor.load(self._dataset_root / "data.yaml")
+                self._load_entry_by_index(0)
+            elif index.total % 1000 < 100:
+                # Refresh every ~1000 entries after that
+                self._file_explorer.load_index(index)
+                self._stats_panel.set_index(index)
             return
 
+        # Final chunk
         if getattr(self, "_progress_dlg", None) is not None:
             self._progress_dlg.status(f"Indexed {index.total} images…", "done")
         self._close_progress_dialog()
@@ -774,7 +781,10 @@ class MainWindow(QMainWindow):
         if recovered:
             self._dirty_map = recovered
 
-        if index.entries:
+        self._file_explorer.load_index(index)
+        self._stats_panel.set_index(index)
+
+        if self._current_entry is None and index.entries:
             self._load_entry_by_index(0)
 
     def _prompt_kpt_selection_for_fresh_dataset(self) -> None:
