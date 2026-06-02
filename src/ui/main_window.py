@@ -743,18 +743,18 @@ class MainWindow(QMainWindow):
     def _on_chunk_ready(self, index: "DatasetIndex", is_final: bool) -> None:
         self._dataset_index = index
 
-        # Update file explorer + stats on every chunk so UI feels live
-        self._file_explorer.load_index(index)
-        self._stats_panel.set_index(index)
-
         if getattr(self, "_progress_dlg", None) is not None:
-            total = index.total
-            self._progress_dlg.status(f"Indexed {total} images…", "active")
+            self._progress_dlg.status(f"Indexed {index.total} images…", "active")
+
+        # Only update the heavy widgets on final chunk or every 2000 entries
+        # to avoid rebuilding the tree model on every 500-entry chunk
+        if is_final or index.total % 2000 < 500:
+            self._file_explorer.load_index(index)
+            self._stats_panel.set_index(index)
 
         if not is_final:
             return
 
-        # --- final chunk only below ---
         if getattr(self, "_progress_dlg", None) is not None:
             self._progress_dlg.status(f"Indexed {index.total} images…", "done")
         self._close_progress_dialog()
