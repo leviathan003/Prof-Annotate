@@ -39,7 +39,7 @@ pip install onnxruntime-gpu
 ```bash
 python main.py
 # or, after pip install -e .
-bytemark
+ProfAnnotate
 ```
 
 ### AppImage (Linux)
@@ -53,7 +53,7 @@ bash build/build_appimage.sh
 
 ## Dataset Structure
 
-ByteMark expects YOLO11 format:
+ProfAnnotate expects YOLO11 format:
 
 ```
 dataset_root/
@@ -220,7 +220,7 @@ Splitter positions and window geometry are saved to `~/.profannotate/layout.json
 
 ## Git Integration
 
-If the dataset root is inside a git repository, the status bar shows the author, date, and hash of the last commit that touched each image's label file (read-only — ByteMark never commits).
+If the dataset root is inside a git repository, the status bar shows the author, date, and hash of the last commit that touched each image's label file (read-only — Prof Annotate never commits).
 
 ---
 
@@ -277,4 +277,3 @@ profannotate/
 ## License
 
 GPL v2 — see `LICENSE`.
-```
