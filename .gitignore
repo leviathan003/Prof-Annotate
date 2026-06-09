@@ -13,6 +13,5 @@ release/
 Thumbs.db
 .pytest_cache/
 .coverage
-models/*.onnx
 docs.txt
 *.AppImage
