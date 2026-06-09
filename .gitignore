@@ -2,7 +2,6 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 dist_nuitka/
-build/profannotate
 .env
 .venv
 release/
@@ -15,4 +14,3 @@ Thumbs.db
 .coverage
 docs.txt
 *.AppImage
-build/patchlf
