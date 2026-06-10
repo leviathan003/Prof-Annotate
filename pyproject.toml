@@ -1,9 +1,9 @@
 [build-system]
 requires = ["setuptools>=68.0", "wheel"]
-build-backend = "setuptools.backends.legacy:build"
+build-backend = "setuptools.build_meta"
 
 [project]
-name = "bytemark"
+name = "profannotate"
 version = "1.0.0"
 description = "Terminal-style GUI annotation tool for YOLO training data"
 readme = "README.md"
@@ -20,16 +20,20 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gpu-cuda = ["onnxruntime-gpu>=1.17.0"]
+# GPU acceleration via onnxruntime-gpu. CUDA runtime libraries (cudnn/cublas/cudart)
+# are provided by the host, not pulled in here; the app falls back to CPU if absent.
+gpu-cuda12 = ["onnxruntime-gpu>=1.19,<2"]   # modern NVIDIA: CUDA 12 / cuDNN 9 (driver R525+)
+gpu-cuda11 = ["onnxruntime-gpu==1.18.1"]    # legacy NVIDIA: CUDA 11.8 / cuDNN 8
+gpu-cuda = ["onnxruntime-gpu>=1.19,<2"]     # alias for gpu-cuda12
 dev = ["pytest>=8.0.0", "pytest-qt>=4.3.1", "black>=24.0.0", "ruff>=0.3.0"]
-build = ["pyinstaller>=6.0"]
+build = ["nuitka>=2.0", "ordered-set", "zstandard"]
 
 [project.scripts]
-bytemark = "bytemark.app:main"
+profannotate = "profannotate.app:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["bytemark*"]
+include = ["profannotate*"]
 
 [tool.black]
 line-length = 100

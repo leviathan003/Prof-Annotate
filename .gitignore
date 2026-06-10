@@ -14,3 +14,4 @@ Thumbs.db
 .coverage
 docs.txt
 *.AppImage
+release-trigger.txt

@@ -1,0 +1,111 @@
+name: Build & Release
+
+# Push to main          -> build all three AppImages + smoke test, upload as artifacts.
+# Push a tag like v1.2.0 -> build + publish a GitHub Release with all three attached.
+# Manual run (Actions tab) -> build + artifacts.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write          # needed by the release job to create releases
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.variant }})
+    runs-on: ubuntu-latest
+    # Build in a low-glibc image (glibc 2.28) so the AppImages run on a wide range
+    # of distros: Debian 10+, Ubuntu 18.04→24.04+, Mint, Fedora, RHEL 8+, Arch, etc.
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cpu, gpu-cuda12, gpu-cuda11]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Cache ccache (faster Nuitka recompiles)
+        uses: actions/cache@v4
+        with:
+          path: /github/home/.cache/ccache
+          key: ccache-${{ matrix.variant }}-${{ hashFiles('pyproject.toml') }}
+          restore-keys: |
+            ccache-${{ matrix.variant }}-
+            ccache-
+
+      - name: Build AppImage (${{ matrix.variant }})
+        run: bash build/_build_inside_container.sh ${{ matrix.variant }}
+
+      - name: Smoke test (headless, host has no GPU -> CPU fallback)
+        run: |
+          set -e
+          APP="ProfAnnotate-${{ matrix.variant }}-x86_64.AppImage"
+          chmod +x "$APP"
+          export QT_QPA_PLATFORM=offscreen APPIMAGE_EXTRACT_AND_RUN=1
+          export HOME="$PWD/_smoke_home"
+          mkdir -p "$HOME"
+          # GUI app runs an event loop; let it start then kill it with timeout.
+          timeout 45 "./$APP" || true
+          LOG="$HOME/.profannotate/launch.log"
+          echo "----- launch.log -----"; cat "$LOG" 2>/dev/null || echo "(no launch log produced)"
+          if [ -f "$LOG" ] && grep -qiE "Traceback|ModuleNotFoundError|ImportError|cannot open shared object|symbol lookup error|core dumped" "$LOG"; then
+            echo "::error::Smoke test failed for ${{ matrix.variant }} — fatal error in launch log"
+            exit 1
+          fi
+          echo "Smoke test OK: ${{ matrix.variant }} started cleanly"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProfAnnotate-${{ matrix.variant }}
+          path: ProfAnnotate-${{ matrix.variant }}-x86_64.AppImage
+          if-no-files-found: error
+
+  release:
+    name: Publish release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all AppImages
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List artifacts
+        run: ls -lh dist
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/ProfAnnotate-*-x86_64.AppImage
+          generate_release_notes: true
+          body: |
+            ## Prof Annotate ${{ github.ref_name }}
+
+            ### Which AppImage should I download?
+
+            | File | Use it if… |
+            |------|------------|
+            | **ProfAnnotate-cpu-x86_64.AppImage** | **Recommended for most people.** Works on any x86_64 Linux (no GPU needed). |
+            | ProfAnnotate-gpu-cuda12-x86_64.AppImage | You have a modern NVIDIA GPU with driver ≥ R525 and CUDA 12 / cuDNN 9 installed. |
+            | ProfAnnotate-gpu-cuda11-x86_64.AppImage | You have a legacy NVIDIA GPU with CUDA 11.8 / cuDNN 8 installed. |
+
+            Both GPU builds **fall back to CPU automatically** if the host CUDA libraries
+            are missing — so when in doubt, the CPU build is the safe choice.
+
+            **Compatibility:** x86_64 only · glibc ≥ 2.28 (built on manylinux_2_28) ·
+            needs `libfuse2`, or run with `--appimage-extract-and-run`.
+
+            ```bash
+            chmod +x ProfAnnotate-cpu-x86_64.AppImage
+            ./ProfAnnotate-cpu-x86_64.AppImage
+            ```

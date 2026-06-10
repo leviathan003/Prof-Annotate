@@ -1,5 +1,5 @@
 """
-main.py — ByteMark entry point.
+main.py — ProfAnnotate entry point.
 """
 
 import os
@@ -47,7 +47,7 @@ def main() -> int:
     from PySide6.QtGui import QFont, QFontDatabase, QIcon
     from PySide6.QtWidgets import QApplication
 
-    from src.config.constants import (
+    from profannotate.config.constants import (
         APP_NAME,
         APP_VERSION,
         FONTS_DIR,
@@ -126,13 +126,13 @@ def main() -> int:
         qss_text = re.sub(r"font-size:\s*(\d+)px", _scale_px, qss_text)
         app.setStyleSheet(qss_text)
 
-    icon_path = ICONS_DIR / "bytemark.png"
+    icon_path = ICONS_DIR / "profannotate.png"
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
 
-    from src.ui.dialogs.splash_screen import SplashScreen
-    from src.ui.main_window import MainWindow
-    from src.ui.prof_watcher import install_prof_watcher
+    from profannotate.ui.dialogs.splash_screen import SplashScreen
+    from profannotate.ui.main_window import MainWindow
+    from profannotate.ui.prof_watcher import install_prof_watcher
 
     # Holds a hard reference so Qt doesn't garbage-collect the filter.
     _prof_watcher = install_prof_watcher(app)  # noqa: F841

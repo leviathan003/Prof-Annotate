@@ -1,0 +1,17 @@
+[log] full build log -> /home/tempadmin/Documents/CODE/Prof-Annotate/build/logs/build-20260610-132043.log
+
+==> Containerized build
+[13:20:43] image    : quay.io/pypa/manylinux_2_28_x86_64
+[13:20:43] variants : gpu-cuda12 gpu-cuda11
+[13:20:43] repo     : /home/tempadmin/Documents/CODE/Prof-Annotate
+  ✓ docker: Docker version 29.4.3, build 055a478
+
+==> Launching build inside quay.io/pypa/manylinux_2_28_x86_64
+[13:20:43] docker run (quay.io/pypa/manylinux_2_28_x86_64)
+[13:20:43] $ docker run --rm -v /home/tempadmin/Documents/CODE/Prof-Annotate:/work -w /work -e PIP_ROOT_USER_ACTION=ignore -e HOST_UID=1001 -e HOST_GID=1001 -e BUILD_LOG=/work/build/logs/container-build.log quay.io/pypa/manylinux_2_28_x86_64 bash /work/build/_build_inside_container.sh gpu-cuda12 gpu-cuda11
+[log] full build log -> /work/build/logs/container-build.log
+
+==> Container build for variants: gpu-cuda12 gpu-cuda11
+[07:50:43] glibc: ldd (GNU libc) 2.28
+
+==> Installing Qt/X11 runtime + build tools

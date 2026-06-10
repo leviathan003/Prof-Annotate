@@ -1,11 +1,14 @@
+# Runtime dependencies for Prof Annotate (CPU).
+# Mirrors [project].dependencies in pyproject.toml.
+# Preferred install:  pip install -e .   (or: bash scripts/setup.sh)
+#
+# GPU acceleration:   pip install -e ".[gpu-cuda]"   (swaps in onnxruntime-gpu)
+# Dev tools:          pip install -e ".[dev]"        (pytest, pytest-qt, black, ruff)
+
 PySide6>=6.6.0
-onnxruntime-gpu>=1.17.0
+onnxruntime>=1.17.0
 numpy>=1.26.0
 opencv-python-headless>=4.9.0
-Pillow>=10.2.0
 PyYAML>=6.0.1
 gitpython>=3.1.40
-pytest>=8.0.0
-pytest-qt>=4.3.1
-black>=24.0.0
-ruff>=0.3.0
+Pillow>=10.2.0
