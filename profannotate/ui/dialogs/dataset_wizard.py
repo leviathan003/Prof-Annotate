@@ -295,18 +295,25 @@ class _DatasetWorker(QObject):
     def _run_auto_annotate(self, dest: Path) -> None:
         from profannotate.config.constants import YOLO_IMAGE_EXTS
         from profannotate.core.annotation.models import ImageAnnotations
-        from profannotate.core.annotation.writer import write_label_file
+        from profannotate.core.annotation.writer import (
+            label_path_for_image,
+            materialize_empty_labels,
+            write_label_file,
+        )
         from profannotate.core.inference.engine import InferenceEngine
         from profannotate.core.inference.filter import filter_by_modality
         from profannotate.core.inference.postprocess import postprocess
-        from profannotate.utils.image import derive_label_path, image_dimensions, load_image_rgb
+        from profannotate.utils.image import image_dimensions, load_image_rgb
+
+        # Guarantee the labels tree + an empty .txt per image up front.
+        materialize_empty_labels(dest)
 
         engine = InferenceEngine()
         engine.load()
         for img_path in dest.rglob("*"):
             if img_path.suffix.lower() not in YOLO_IMAGE_EXTS:
                 continue
-            lbl_path = derive_label_path(img_path)
+            lbl_path = label_path_for_image(dest, img_path)
             if lbl_path.exists() and lbl_path.stat().st_size > 0:
                 continue
             rgb = load_image_rgb(img_path)

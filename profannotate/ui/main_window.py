@@ -147,6 +147,8 @@ class _ReshuffleWorker(QObject):
 
 class _DatasetIndexLoader(QObject):
     chunk_ready = Signal(object, bool)  # (partial_index, is_final)
+    status = Signal(str)
+    read_only = Signal()
     failed = Signal(str)
 
     def __init__(self, root: Path, flat: bool = False) -> None:
@@ -162,7 +164,23 @@ class _DatasetIndexLoader(QObject):
                 idx = load_flat_dataset(self._root)
                 self.chunk_ready.emit(idx, True)
             else:
+                from profannotate.core.annotation.writer import (
+                    dataset_writable,
+                    materialize_empty_labels,
+                )
                 from profannotate.core.dataset.loader import stream_dataset
+
+                # Guarantee a labels tree + an empty .txt per image before
+                # indexing, so the dataset always carries the mapped label
+                # files (filled later by auto-annotate or manual saves). On
+                # read-only media we skip creation and warn the annotator —
+                # viewing still works.
+                if dataset_writable(self._root):
+                    created = materialize_empty_labels(self._root)
+                    if created:
+                        self.status.emit(f"Prepared labels folder — {created} new empty file(s).")
+                else:
+                    self.read_only.emit()
 
                 for partial_index, is_final in stream_dataset(self._root):
                     self.chunk_ready.emit(partial_index, is_final)
@@ -172,6 +190,7 @@ class _DatasetIndexLoader(QObject):
 
 class _BulkAutoAnnotateWorker(QObject):
     progress = Signal(str)
+    status = Signal(str)
     finished = Signal()
     failed = Signal(str)
 
@@ -195,12 +214,21 @@ class _BulkAutoAnnotateWorker(QObject):
 
     def _execute(self) -> None:
         from profannotate.core.annotation.models import ImageAnnotations
-        from profannotate.core.annotation.writer import write_label_file
+        from profannotate.core.annotation.writer import (
+            label_path_for_image,
+            materialize_empty_labels,
+            write_label_file,
+        )
         from profannotate.core.inference.engine import InferenceEngine
         from profannotate.core.inference.filter import filter_by_modality
         from profannotate.core.inference.postprocess import postprocess
         from profannotate.ui.dialogs.dataset_wizard import _reindex_keypoints_for_selection
-        from profannotate.utils.image import derive_label_path, image_dimensions, load_image_rgb
+        from profannotate.utils.image import image_dimensions, load_image_rgb
+
+        # Lay down the labels tree + an empty .txt per image up front, so the
+        # folder exists immediately regardless of how many detections follow.
+        materialize_empty_labels(self._root)
+        self.status.emit("Created labels folder…")
 
         engine = InferenceEngine()
         engine.load()
@@ -219,7 +247,7 @@ class _BulkAutoAnnotateWorker(QObject):
             filtered = filter_by_modality(anns, self._modalities)
             if self._active_kpt_names:
                 filtered = _reindex_keypoints_for_selection(filtered, self._active_kpt_names)
-            lbl_path = derive_label_path(img_path)
+            lbl_path = label_path_for_image(self._root, img_path)
             img_ann = ImageAnnotations(
                 image_path=str(img_path),
                 label_path=str(lbl_path),
@@ -688,6 +716,10 @@ class MainWindow(QMainWindow):
             self._on_bulk_annotate_progress,
             Qt.ConnectionType.QueuedConnection,
         )
+        self._aa_worker.status.connect(
+            self._on_index_status,
+            Qt.ConnectionType.QueuedConnection,
+        )
         self._aa_worker.finished.connect(
             lambda: self._on_bulk_annotate_done(root),
             Qt.ConnectionType.QueuedConnection,
@@ -718,6 +750,7 @@ class MainWindow(QMainWindow):
         self._dataset_index = None
         self._current_entry = None
         self._current_idx = 0
+        self._dataset_read_only = False
 
         if getattr(self, "_progress_dlg", None) is None:
             self._progress_dlg = self._make_progress_dialog(
@@ -734,6 +767,12 @@ class MainWindow(QMainWindow):
         self._load_worker.chunk_ready.connect(
             self._on_chunk_ready, Qt.ConnectionType.QueuedConnection
         )
+        self._load_worker.status.connect(
+            self._on_index_status, Qt.ConnectionType.QueuedConnection
+        )
+        self._load_worker.read_only.connect(
+            self._on_dataset_read_only, Qt.ConnectionType.QueuedConnection
+        )
         self._load_worker.failed.connect(self._on_bg_error, Qt.ConnectionType.QueuedConnection)
         self._load_worker.chunk_ready.connect(
             lambda _, is_final: self._load_thread.quit() if is_final else None,
@@ -741,6 +780,18 @@ class MainWindow(QMainWindow):
         )
         self._load_thread.finished.connect(self._load_thread.deleteLater)
         self._load_thread.start()
+
+    def _on_index_status(self, message: str) -> None:
+        if getattr(self, "_progress_dlg", None) is None:
+            return
+        self._progress_dlg.add_log(message, "done")
+
+    def _on_dataset_read_only(self) -> None:
+        # Flag now; surface the message once indexing finishes and the progress
+        # dialog has closed (avoids stacking a modal over the progress overlay).
+        self._dataset_read_only = True
+        if getattr(self, "_progress_dlg", None) is not None:
+            self._progress_dlg.add_log("Dataset is read-only — labels can't be saved.", "error")
 
     def _on_chunk_ready(self, index: "DatasetIndex", is_final: bool) -> None:
         self._dataset_index = index
@@ -786,6 +837,16 @@ class MainWindow(QMainWindow):
 
         if self._current_entry is None and index.entries:
             self._load_entry_by_index(0)
+
+        if getattr(self, "_dataset_read_only", False):
+            self._dataset_read_only = False
+            ErrorDialog(
+                "This dataset rests on read-only ground, Annotator.\n\n"
+                "I cannot conjure label files here, nor will your annotations "
+                "persist when saved. You may view and mark up freely, but to "
+                "commit your work, copy the dataset to a writable location first.",
+                self,
+            ).exec()
 
     def _prompt_kpt_selection_for_fresh_dataset(self) -> None:
         from profannotate.core.dataset.yaml_handler import load_yaml, save_yaml

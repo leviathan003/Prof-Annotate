@@ -48,8 +48,13 @@ def save_yaml(root: str | Path, data: dict[str, Any]) -> bool:
         kpt_shape = data.get("kpt_shape")
         kpt_names = data.get("keypoint_names")
 
-        body = yaml.dump(
-            body_dict, default_flow_style=False, allow_unicode=True, sort_keys=True
+        # An empty mapping serializes to "{}", which becomes invalid YAML once
+        # the block-style extras (kpt_shape/keypoint_names) are appended below.
+        # Emit nothing for an empty body so the extras stand on their own.
+        body = (
+            yaml.dump(body_dict, default_flow_style=False, allow_unicode=True, sort_keys=True)
+            if body_dict
+            else ""
         )
 
         extras: list[str] = []
@@ -70,7 +75,8 @@ def save_yaml(root: str | Path, data: dict[str, Any]) -> bool:
 
         text = body.rstrip("\n")
         if extras:
-            text += "\n\n" + "\n".join(extras)
+            joined = "\n".join(extras)
+            text = f"{text}\n\n{joined}" if text else joined
         text += "\n"
 
         path.write_text(text, encoding="utf-8")

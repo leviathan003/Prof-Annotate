@@ -696,7 +696,17 @@ class AnnotationCanvas(QFrame):
         self._clear_violations()
         from profannotate.core.annotation.writer import write_label_file
 
-        write_label_file(self._annotations)
+        if not write_label_file(self._annotations):
+            from profannotate.ui.dialogs.error_dialog import ErrorDialog
+
+            ErrorDialog(
+                "I could not commit this label to disk, Annotator.\n\n"
+                "The dataset appears to be read-only. Move it to a writable "
+                "location and try again — your work remains here, unsaved, until then.",
+                parent=self.window(),
+            ).exec()
+            return
+
         self._dirty = False
         self._undo.clear()
         self._update_border()
