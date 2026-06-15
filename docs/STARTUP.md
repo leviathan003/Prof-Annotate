@@ -62,7 +62,7 @@ data.yaml is a pivotal file that contains the dataset configuration and metadata
 
 9. Keybindings Button: 
 
-![App Screenshot](./images/keybindings.png)
+![App Screenshot](./images/keybindings-btn.png)
 
 This button is pivotal as it shows all the keybindings available to the annotator. Since the focus of the application is productivity, the keybindings are designed to be intuitive and easy to remember, so the annotator can quickly perform common tasks without needing to refer to a manual.
 
