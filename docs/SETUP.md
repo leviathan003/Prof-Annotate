@@ -84,4 +84,4 @@ However there must not be a misconception that the GPU builds will not work on C
 
 After complete setup the user will be greeted by the following splashscreen on starting the application.
 
-![App Screenshot](/images/splashscreen.png)
+![App Screenshot](./images/splashscreen.png)
