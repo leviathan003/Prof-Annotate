@@ -17,7 +17,7 @@ After clicking, the following window will start up commencing the tutorial.
 After this the annotator may press Enter key or Click on the Next button to proceed to the next step. They may also choose to click on the Back button to go back to the previous step. Optionally, they may click on the Skip button to skip the tutorial and proceed to the main application.
 2. Create a Dataset Button: 
 ![App Screenshot](./images/create-new-dataset.png)
-This button allows the annotator to open a dataset as a new dataset, post which they will be provided options on how they wish to start working on it. For details please refer to the CreateNewDataset.md file.
+This button allows the annotator to open a dataset as a new dataset, post which they will be provided options on how they wish to start working on it. For details please refer to the CREATENEWDATASET.md file.
 3. The File Explorer: 
 ![App Screenshot](./images/file-explorer.png)
 This section allows the annotator to browse and select files from their local machine to annotate. The annotator can press Ctrl + O to open a folder and Ctrl + F to open a file. The files whose names are shown in green color have existing annotations and can be edited. The files that are shown in yellow color have no existing annotations and are currently annotated from scratch. The files are shown in red color are the files that do not have any annotation file mapped to them.

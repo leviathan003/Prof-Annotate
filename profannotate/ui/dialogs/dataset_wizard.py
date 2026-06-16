@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from profannotate.config.constants import AUTOANNOTATE_HUMAN_WARNING, NUM_KEYPOINTS
+from profannotate.config.constants import NUM_KEYPOINTS
 from profannotate.config.skeleton import KEYPOINT_NAMES
 from profannotate.core.annotation.models import Modality
 
@@ -497,7 +497,10 @@ class _ModalityPage(_Page):
         super().__init__()
         self._layout.addWidget(self._title("Select Your Modalities"))
         self._layout.addWidget(
-            self._body("Which annotation modalities shall the auto-annotator produce, Annotator?")
+            self._body(
+                "Which annotation modalities shall this dataset include, Annotator?\n\n"
+                "Select one or more — your choice shapes every step that follows."
+            )
         )
         self._checks: dict[Modality, QCheckBox] = {}
         specs = [
@@ -512,20 +515,25 @@ class _ModalityPage(_Page):
             self._layout.addWidget(cb)
             self._checks[mod] = cb
 
-        warn = QLabel(AUTOANNOTATE_HUMAN_WARNING)
-        warn.setObjectName("dialog_warning")
-        warn.setWordWrap(True)
-        warn.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._layout.addWidget(warn)
+        self._err = QLabel("")
+        self._err.setObjectName("accent_red")
+        self._err.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._layout.addWidget(self._err)
 
         ok = QPushButton("> Proceed with these modalities")
         ok.setObjectName("primary_button")
-        ok.clicked.connect(
-            lambda: self.proceeded.emit({m for m, cb in self._checks.items() if cb.isChecked()})
-        )
+        ok.clicked.connect(self._on_ok)
         cancel = QPushButton("Cancel")
         cancel.clicked.connect(self.cancelled)
         self._layout.addLayout(self._btn_row(ok, cancel))
+
+    def _on_ok(self) -> None:
+        selected = {m for m, cb in self._checks.items() if cb.isChecked()}
+        if not selected:
+            self._err.setText("At least one modality must be selected, Annotator.")
+            return
+        self._err.setText("")
+        self.proceeded.emit(selected)
 
 
 # ── Keypoint selection page ───────────────────────────────────────────────────
@@ -736,9 +744,9 @@ class DatasetWizard(QDialog):
     dataset_ready = Signal(str)
 
     _PAGE_LABELS = 0
-    _PAGE_KPT = 1  # keypoint selection — always shown, before auto/manual choice
-    _PAGE_AUTO = 2
-    _PAGE_MOD = 3
+    _PAGE_MOD = 1  # modality selection — always the first real choice
+    _PAGE_KPT = 2  # keypoint selection — only when Keypoints is among the modalities
+    _PAGE_AUTO = 3
     _PAGE_SPLIT = 4
     _PAGE_CONFIRM = 5
     _PAGE_EXEC = 6
@@ -789,9 +797,9 @@ class DatasetWizard(QDialog):
         # Order MUST match the _PAGE_* indices above
         for page in (
             self._label_page,
+            self._modality_page,
             self._kpt_page,
             self._auto_page,
-            self._modality_page,
             self._split_page,
             self._confirm_page,
             self._exec_page,
@@ -809,7 +817,7 @@ class DatasetWizard(QDialog):
         self._confirm_page.confirmed.connect(self._start_execution)
         self._confirm_page.cancelled.connect(self.reject)
 
-        start = self._PAGE_LABELS if self._show_label_page else self._PAGE_KPT
+        start = self._PAGE_LABELS if self._show_label_page else self._PAGE_MOD
         self._stack.setCurrentIndex(start)
 
     def _goto(self, idx: int) -> None:
@@ -817,7 +825,16 @@ class DatasetWizard(QDialog):
 
     def _on_label_decisions(self, decisions: dict) -> None:
         self._label_decisions = decisions
-        self._goto(self._PAGE_KPT)
+        self._goto(self._PAGE_MOD)
+
+    def _on_modalities(self, mods: set) -> None:
+        self._modalities = mods
+        # Keypoint selection is only relevant when Keypoints is a chosen modality.
+        if Modality.KEYPOINTS in mods:
+            self._goto(self._PAGE_KPT)
+        else:
+            self._selected_kpt_names = None
+            self._goto(self._PAGE_AUTO)
 
     def _on_kpt_selection(self, names) -> None:
         # names is list[str] or None (None = all keypoints)
@@ -826,15 +843,12 @@ class DatasetWizard(QDialog):
 
     def _on_auto(self) -> None:
         self._auto_annotate = True
-        self._goto(self._PAGE_MOD)
+        self._goto(self._PAGE_SPLIT)
 
     def _on_manual(self) -> None:
         self._auto_annotate = False
-        self._modalities = set()
-        self._goto(self._PAGE_SPLIT)
-
-    def _on_modalities(self, mods: set) -> None:
-        self._modalities = mods
+        # Keep the chosen modalities — they drive the confirm summary and the
+        # keypoint gating. The worker simply ignores them in manual mode.
         self._goto(self._PAGE_SPLIT)
 
     def _on_split(self, ratio: float) -> None:
@@ -855,19 +869,22 @@ class DatasetWizard(QDialog):
             f"Source(s): {', '.join(s.name for s in self._sources)}",
             f"Auto-annotation: {'enabled' if self._auto_annotate else 'disabled'}",
         ]
-        if self._auto_annotate and self._modalities:
+        if self._modalities:
             lines.append(f"Modalities: {', '.join(m.name for m in self._modalities)}")
 
-        if self._selected_kpt_names is None:
-            lines.append(f"Keypoints: all {NUM_KEYPOINTS}")
-        else:
-            preview = ", ".join(self._selected_kpt_names[:6])
-            suffix = (
-                f", +{len(self._selected_kpt_names) - 6} more"
-                if len(self._selected_kpt_names) > 6
-                else ""
-            )
-            lines.append(f"Keypoints: {len(self._selected_kpt_names)} selected ({preview}{suffix})")
+        if Modality.KEYPOINTS in self._modalities:
+            if self._selected_kpt_names is None:
+                lines.append(f"Keypoints: all {NUM_KEYPOINTS}")
+            else:
+                preview = ", ".join(self._selected_kpt_names[:6])
+                suffix = (
+                    f", +{len(self._selected_kpt_names) - 6} more"
+                    if len(self._selected_kpt_names) > 6
+                    else ""
+                )
+                lines.append(
+                    f"Keypoints: {len(self._selected_kpt_names)} selected ({preview}{suffix})"
+                )
 
         if keeping:
             lines.append(f"Labels kept from: {', '.join(keeping)}")

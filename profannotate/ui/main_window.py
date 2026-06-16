@@ -606,11 +606,31 @@ class MainWindow(QMainWindow):
             if from_wizard:
                 self._start_index_load(root, flat=False, gen_yaml=False)
                 return
-            # Labels folder is empty for this dataset — always ask the annotator
-            # which kpts to use, regardless of whether data.yaml already records
-            # a set. Existing names (if any) are preselected in the dialog.
-            if not self._ensure_kpt_config_for_root(root, force=True):
+            # Labels folder is empty for this dataset. Mirror the creation wizard:
+            # ask which modalities first, then (only if Keypoints is chosen) which
+            # keypoints, and finally the auto/manual choice.
+            from profannotate.core.annotation.models import Modality
+            from profannotate.ui.dialogs.modality_prompt import ModalityPrompt
+
+            prompt = ModalityPrompt(
+                "Select Modalities to Annotate", show_warning=False, parent=self
+            )
+            if prompt.exec() != prompt.DialogCode.Accepted:
+                self._start_index_load(root, flat=False, gen_yaml=False)
                 return
+            modalities = prompt.selected_modalities()
+            if not modalities:
+                self._start_index_load(root, flat=False, gen_yaml=False)
+                return
+
+            if Modality.KEYPOINTS in modalities:
+                # Existing names (if any) are preselected in the dialog.
+                if not self._ensure_kpt_config_for_root(root, force=True):
+                    return
+            else:
+                # Keypoints not wanted — don't re-prompt for them after the load.
+                self._suppress_fresh_kpt_prompt = True
+
             dlg = ConfirmDialog(
                 "No Annotations Found",
                 f"The dataset carries {diag.total_structured_images} image(s) "
@@ -623,7 +643,7 @@ class MainWindow(QMainWindow):
                 self,
             )
             if dlg.exec() == dlg.DialogCode.Accepted:
-                self._start_bulk_auto_annotate(root)
+                self._start_bulk_auto_annotate(root, modalities)
             else:
                 self._start_index_load(root, flat=False, gen_yaml=False)
             return
@@ -673,25 +693,8 @@ class MainWindow(QMainWindow):
         self._close_progress_dialog()
         self._start_index_load(new_root, flat=False, gen_yaml=False)
 
-    def _start_bulk_auto_annotate(self, root: Path) -> None:
-        from profannotate.ui.dialogs.modality_prompt import ModalityPrompt
-
-        prompt = ModalityPrompt(
-            "Select Modalities to Auto-Annotate", show_warning=True, parent=self
-        )
-        if prompt.exec() != prompt.DialogCode.Accepted:
-            if not (root / "data.yaml").exists():
-                generate_yaml(root)
-            self._start_index_load(root, flat=False, gen_yaml=False)
-            return
-
-        modalities = prompt.selected_modalities()
-        if not modalities:
-            if not (root / "data.yaml").exists():
-                generate_yaml(root)
-            self._start_index_load(root, flat=False, gen_yaml=False)
-            return
-
+    def _start_bulk_auto_annotate(self, root: Path, modalities: "set[Modality]") -> None:
+        # Modalities are chosen by the caller before this point.
         self._progress_dlg = self._make_progress_dialog(
             title="Auto-annotating the dataset, Annotator.",
             subtitle=(
@@ -821,7 +824,9 @@ class MainWindow(QMainWindow):
         if self._pending_gen_yaml and not yaml_path.exists():
             generate_yaml(self._dataset_root)
 
-        if index.kpt_config_synthesized and index.annotated_count == 0:
+        suppress_kpt = getattr(self, "_suppress_fresh_kpt_prompt", False)
+        self._suppress_fresh_kpt_prompt = False
+        if index.kpt_config_synthesized and index.annotated_count == 0 and not suppress_kpt:
             self._prompt_kpt_selection_for_fresh_dataset()
 
         self._yaml_editor.load(yaml_path)
