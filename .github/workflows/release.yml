@@ -6,11 +6,11 @@ name: Build & Release
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ["v*"]
   workflow_dispatch:
 
 permissions:
-  contents: write          # needed by the release job to create releases
+  contents: write # needed by the release job to create releases
 
 concurrency:
   group: build-${{ github.ref }}
@@ -68,9 +68,56 @@ jobs:
           path: ProfAnnotate-${{ matrix.variant }}-x86_64.AppImage
           if-no-files-found: error
 
+  build-windows:
+    name: build-windows (${{ matrix.variant }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [cpu, gpu-cuda12]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip setuptools wheel
+          pip install -e .
+          pip install nuitka ordered-set zstandard
+
+      - name: Build exe (${{ matrix.variant }})
+        run: python build/build_windows.py ${{ matrix.variant }}
+
+      - name: Smoke test (headless, host has no GPU -> CPU fallback)
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = 'offscreen'
+          $exe = ".\ProfAnnotate-${{ matrix.variant }}-windows-x64.exe"
+          # Onefile exes self-extract on launch; give it time to start the Qt loop.
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 30
+          if ($p.HasExited -and $p.ExitCode -ne 0) {
+            Write-Error "Smoke test failed for ${{ matrix.variant }} — exited with $($p.ExitCode)"
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Write-Host "Smoke test OK: ${{ matrix.variant }} started cleanly"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ProfAnnotate-${{ matrix.variant }}-windows
+          path: ProfAnnotate-${{ matrix.variant }}-windows-x64.exe
+          if-no-files-found: error
+
   release:
     name: Publish release
-    needs: build
+    needs: [build, build-windows]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
@@ -86,12 +133,14 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/ProfAnnotate-*-x86_64.AppImage
+          files: |
+            dist/ProfAnnotate-*-x86_64.AppImage
+            dist/ProfAnnotate-*-windows-x64.exe
           generate_release_notes: true
           body: |
             ## Prof Annotate ${{ github.ref_name }}
 
-            ### Which AppImage should I download?
+            ### Linux — which AppImage should I download?
 
             | File | Use it if… |
             |------|------------|
@@ -99,10 +148,20 @@ jobs:
             | ProfAnnotate-gpu-cuda12-x86_64.AppImage | You have a modern NVIDIA GPU with driver ≥ R525 and CUDA 12 / cuDNN 9 installed. |
             | ProfAnnotate-gpu-cuda11-x86_64.AppImage | You have a legacy NVIDIA GPU with CUDA 11.8 / cuDNN 8 installed. |
 
-            Both GPU builds **fall back to CPU automatically** if the host CUDA libraries
-            are missing — so when in doubt, the CPU build is the safe choice.
+            ### Windows — which .exe should I download?
 
-            **Compatibility:** x86_64 only · glibc ≥ 2.28 (built on manylinux_2_28) ·
+            | File | Use it if… |
+            |------|------------|
+            | **ProfAnnotate-cpu-windows-x64.exe** | **Recommended for most people.** Works on any Windows x64 machine (no GPU needed). |
+            | ProfAnnotate-gpu-cuda12-windows-x64.exe | You have a modern NVIDIA GPU with CUDA 12 / cuDNN 9 installed. |
+
+            Both GPU builds **fall back to CPU automatically** if the host CUDA libraries
+            are missing — so when in doubt, the CPU build is the safe choice. The Windows
+            builds are portable single files: just download and run (no installation). On
+            first launch, Windows SmartScreen may warn about an unsigned app — choose
+            **More info → Run anyway**.
+
+            **Linux compatibility:** x86_64 only · glibc ≥ 2.28 (built on manylinux_2_28) ·
             needs `libfuse2`, or run with `--appimage-extract-and-run`.
 
             ```bash

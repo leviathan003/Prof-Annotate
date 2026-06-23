@@ -2,6 +2,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 dist_nuitka/
+dist_nuitka_win/
 .env
 .venv
 release/
@@ -14,5 +15,6 @@ Thumbs.db
 .coverage
 docs.txt
 *.AppImage
+*.exe
 release-trigger.txt
 tests/
