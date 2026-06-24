@@ -38,7 +38,6 @@ from profannotate.config.constants import (
     CANVAS_ZOOM_MIN,
     NUM_KEYPOINTS,
 )
-from profannotate.config.skeleton import KEYPOINT_NAMES
 from profannotate.core.annotation.models import (
     Annotation,
     BBox,

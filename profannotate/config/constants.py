@@ -26,12 +26,25 @@ SESSION_CACHE_DIR = APP_CACHE_DIR / "sessions"
 PREFS_FILE = APP_CACHE_DIR / "preferences.json"
 LAYOUT_FILE = APP_CACHE_DIR / "layout.json"
 
-ONNX_MODEL_FILENAME = "yolo11n_segpose.onnx"
+ONNX_MODEL_FILENAME = "wb_s_full100_best.onnx"
 ONNX_MODEL_PATH = MODELS_DIR / ONNX_MODEL_FILENAME
 MODEL_INPUT_SIZE = (640, 640)
 MODEL_CONF_THRESHOLD = 0.25
 MODEL_IOU_THRESHOLD = 0.45
-NUM_KEYPOINTS = 19
+
+# Keypoint count is schema-driven — this is a fallback for code paths that have
+# no dataset/model context. The live schema follows skeleton.get_active_schema().
+from profannotate.config.skeleton import get_active_schema as _get_active_schema  # noqa: E402
+
+NUM_KEYPOINTS = _get_active_schema().count
+
+# Normalized padding applied when tightening a bbox to a keypoint subset.
+KEYPOINT_BBOX_PADDING = 0.02
+
+# The model's per-keypoint channel is a confidence in [0, 1], not a 0/1/2 flag.
+# Map it to a YOLO visibility flag: >= threshold → visible (2), > 0 → labeled
+# but uncertain (1), == 0 / absent → not labeled (0).
+KEYPOINT_VIS_THRESHOLD = 0.5
 
 ONNX_PROVIDERS_PRIORITY = [
     "CUDAExecutionProvider",

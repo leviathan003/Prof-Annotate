@@ -22,9 +22,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from profannotate.config.constants import NUM_KEYPOINTS
-from profannotate.config.skeleton import KEYPOINT_NAMES
-
 
 class _BulkKptWorker(QObject):
     log = Signal(str)
@@ -126,7 +123,9 @@ class KptBulkEditDialog(QDialog):
         ):
             self._active_kpt_names: list[str] = yaml_data["keypoint_names"]
         else:
-            self._active_kpt_names = [KEYPOINT_NAMES[i] for i in range(NUM_KEYPOINTS)]
+            from profannotate.config.skeleton import get_active_schema
+
+            self._active_kpt_names = get_active_schema().names_in_order()
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)

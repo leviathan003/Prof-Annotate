@@ -11,10 +11,9 @@ import cv2
 import numpy as np
 
 from profannotate.config.constants import (
+    KEYPOINT_VIS_THRESHOLD,
     MODEL_CONF_THRESHOLD,
-    MODEL_INPUT_SIZE,
     MODEL_IOU_THRESHOLD,
-    NUM_KEYPOINTS,
 )
 from profannotate.core.annotation.models import Annotation, BBox, Keypoint, SegmentationMask
 
@@ -61,6 +60,9 @@ def postprocess(
     boxes_xyxy = boxes_xyxy[keep]
 
     kpt_offset = 4 + _NC + _NM  # 37
+    # Derive the keypoint count from the model output width so the same code
+    # handles any schema (19, 133, …): width = 4 + nc + nm + 3*K.
+    num_keypoints = max(0, (predictions.shape[1] - kpt_offset) // 3)
 
     annotations: list[Annotation] = []
     for det_idx, pred in enumerate(predictions):
@@ -80,10 +82,18 @@ def postprocess(
         )
 
         keypoints: list[Keypoint] = []
-        for i in range(NUM_KEYPOINTS):
+        for i in range(num_keypoints):
             kx = pred[kpt_offset + i * 3]
             ky = pred[kpt_offset + i * 3 + 1]
-            kv = int(pred[kpt_offset + i * 3 + 2])
+            kconf = float(pred[kpt_offset + i * 3 + 2])
+            # The channel is a confidence in [0, 1]; bucket it into a YOLO
+            # visibility flag (2 visible / 1 uncertain / 0 absent).
+            if kconf >= KEYPOINT_VIS_THRESHOLD:
+                kv = 2
+            elif kconf > 0.0:
+                kv = 1
+            else:
+                kv = 0
             keypoints.append(
                 Keypoint(
                     x=float(max(0.0, min(1.0, inv_x(kx)))),

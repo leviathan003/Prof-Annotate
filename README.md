@@ -2,7 +2,7 @@
 
 ![App Screenshot](docs/images/demo-interface.png)
 
-Prof Annotate is a terminal style software made with PySide6, for making a easier approach to data annotation for human datasets. Currently focused on human only datasets, working with detection, pose and segmentation, I plan to add more features and support for other datasets as well. The focus point arises as the auto-annotation model yolo11n-segpose is primarily trained on human datasets, therefore can only auto annotate human images but with some caveats in accuracy due to its lightweight nature. However if the user wishes they can manually annotate any image according to their use case for detection, classification and segmentation, for pose there are 19 kpts that are made with human pose kpts in mind, they will be subject to improvement in upcoming updates. 
+Prof Annotate is a terminal style software made with PySide6, for making a easier approach to data annotation for human datasets. Currently focused on human only datasets, working with detection, pose and segmentation, I plan to add more features and support for other datasets as well. The focus point arises as the auto-annotation model (a custom YOLO11 whole-body seg-pose model) is primarily trained on human datasets, therefore can only auto annotate human images but with some caveats in accuracy due to its lightweight nature. However if the user wishes they can manually annotate any image according to their use case for detection, classification and segmentation, for pose there are 133 whole-body keypoints (COCO-WholeBody: body, face, hands and feet) that are made with human pose kpts in mind, they will be subject to improvement in upcoming updates. 
 
 The build has been made on CachyOS (Arch-based, x86_64), but the AppImages in the Releases section can be downloaded and run on Ubuntu/Debian based distros as well. I have not tested it on Fedora machines but I think that will work just as well. Please refer to the releases section to find the appropriate AppImage binary to install according to your machine.
 
@@ -68,12 +68,12 @@ pip install onnxruntime-gpu>=1.17.0
 
 ### 4. Place the ONNX model
 
-Download or copy yolo11n_segpose.onnx into the models/ directory:
+Download or copy wb_s_full100_best.onnx into the models/ directory:
 
 ```
 profannotate/
 └── models/
-    └── yolo11n_segpose.onnx
+    └── wb_s_full100_best.onnx
 ```
 
 The application will start without it, but auto-annotation will not work.
@@ -111,7 +111,7 @@ profannotate/
 ├── scripts/
 │   └── setup.sh
 ├── assets/                 Fonts, icons, QSS theme
-├── models/                 ONNX model (yolo11n_segpose.onnx)
+├── models/                 ONNX model (wb_s_full100_best.onnx)
 ├── src/
 │   ├── config/             constants, shortcuts, skeleton
 │   ├── core/

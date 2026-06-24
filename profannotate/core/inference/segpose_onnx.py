@@ -138,7 +138,7 @@ class SegPoseONNX:
         max_det: int = 50,
         nc: int = 1,
         nm: int = 32,
-        kpt_shape: Tuple[int, int] = (19, 3),
+        kpt_shape: Tuple[int, int] = (133, 3),
         device: str = "cuda",
     ):
         providers = (
@@ -151,6 +151,24 @@ class SegPoseONNX:
         self.session = ort.InferenceSession(onnx_path, sess_options=so, providers=providers)
         self.input_name = self.session.get_inputs()[0].name
         self.output_names = [o.name for o in self.session.get_outputs()]
+
+        # Prefer self-describing metadata embedded by export_segpose_onnx.py; fall
+        # back to the constructor args (so older ONNX files still load).
+        import json as _json
+
+        md = self.session.get_modelmeta().custom_metadata_map or {}
+
+        def _meta(key, default):
+            if key not in md:
+                return default
+            try:
+                return _json.loads(md[key])
+            except Exception:
+                return md[key]
+
+        nc = int(_meta("nc", nc))
+        nm = int(_meta("nm", nm))
+        kpt_shape = tuple(_meta("kpt_shape", list(kpt_shape)))
 
         self.imgsz = imgsz
         self.conf = conf

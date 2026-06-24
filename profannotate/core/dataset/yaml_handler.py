@@ -93,7 +93,7 @@ def generate_yaml(root: str | Path, class_names: list[str] | None = None) -> dic
     Always writes kpt_shape + keypoint_names — inferred from label files when possible,
     otherwise defaults to the full skeleton.
     """
-    from profannotate.config.skeleton import KEYPOINT_NAMES
+    from profannotate.config.skeleton import get_active_schema
 
     root = Path(root).resolve()
     data = dict(_DEFAULT_TEMPLATE)
@@ -107,7 +107,7 @@ def generate_yaml(root: str | Path, class_names: list[str] | None = None) -> dic
         data["nc"] = max(1, len(detected))
         data["names"] = detected if detected else ["object"]
 
-    default_names = [KEYPOINT_NAMES[i] for i in sorted(KEYPOINT_NAMES)]
+    default_names = get_active_schema().names_in_order()
     detected_kpts = _detect_num_keypoints(root)
     if detected_kpts is not None and detected_kpts != len(default_names):
         kpt_names = [f"kpt_{i}" for i in range(detected_kpts)]

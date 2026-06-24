@@ -100,12 +100,60 @@ class InferenceEngine:
                     self._model_path.name,
                     self._active_provider,
                 )
+                self._activate_schema_from_model(session)
                 return
             except Exception as exc:
                 last_exc = exc
                 logger.debug("Provider list %s failed: %s — trying next.", provider_list, exc)
 
         raise RuntimeError(f"Failed to load model on any provider: {last_exc}") from last_exc
+
+    @staticmethod
+    def _activate_schema_from_model(session) -> None:
+        """Select the active keypoint schema from the model itself.
+
+        Prefers the ONNX `kpt_shape` custom-metadata (the model is
+        self-describing); falls back to the combined-head output width
+        (4 + nc + nm + 3*K). No-op if no registered schema matches K.
+        """
+        import json
+
+        from profannotate.config import skeleton
+
+        try:
+            md = session.get_modelmeta().custom_metadata_map or {}
+        except Exception:
+            md = {}
+
+        k = None
+        try:
+            if "kpt_shape" in md:
+                k = int(json.loads(md["kpt_shape"])[0])
+        except Exception:
+            k = None
+
+        if k is None:
+            # Fall back: infer from the combined-head channel width.
+            try:
+                nc = int(md.get("nc", 1))
+                nm = int(md.get("nm", 32))
+                for o in session.get_outputs():
+                    shp = o.shape
+                    if len(shp) == 3 and isinstance(shp[1], int):
+                        k = (shp[1] - (4 + nc + nm)) // 3
+                        break
+            except Exception:
+                k = None
+
+        if not k:
+            return
+        schema = skeleton.schema_for_kpt_count(k)
+        if schema is None:
+            logger.warning("No keypoint schema registered for K=%d; keeping %s",
+                           k, skeleton.get_active_schema().name)
+            return
+        skeleton.set_active_schema(schema.name)
+        logger.info("Active keypoint schema: %s (K=%d)", schema.name, k)
 
     def unload(self) -> None:
         self._session = None

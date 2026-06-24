@@ -2,25 +2,23 @@
 profannotate/ui/dialogs/kpt_selection_dialog.py
 Standalone modal that asks which keypoints should be active for a dataset.
 Used when opening an images-only dataset that has no recorded kpt config yet.
+
+Wraps the shared two-step `KeypointSelectionPanel` (declare count → pick exactly
+that many, with a live skeleton diagram). `selected_names()` returns the chosen
+list in canonical order, or None if cancelled.
 """
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
-    QCheckBox,
     QDialog,
     QFrame,
-    QHBoxLayout,
     QLabel,
-    QPushButton,
-    QScrollArea,
     QVBoxLayout,
-    QWidget,
 )
 
-from profannotate.config.constants import NUM_KEYPOINTS
-from profannotate.config.skeleton import KEYPOINT_NAMES
+from profannotate.ui.widgets.kpt_selection_panel import KeypointSelectionPanel
 
 
 class KptSelectionDialog(QDialog):
@@ -43,7 +41,7 @@ class KptSelectionDialog(QDialog):
         frame.setObjectName("overlay_dialog")
         from profannotate.ui.dialogs._prof_layout import screen_aware_size
 
-        chosen_w = screen_aware_size(frame, preferred_w=600, min_w=360, parent=parent)
+        chosen_w = screen_aware_size(frame, preferred_w=720, min_w=480, parent=parent)
         frame.setMinimumWidth(chosen_w)
         inner = QVBoxLayout(frame)
         inner.setContentsMargins(28, 24, 28, 24)
@@ -56,68 +54,21 @@ class KptSelectionDialog(QDialog):
 
         body = QLabel(
             "This dataset has no recorded keypoint configuration yet, Annotator. "
-            "Choose which keypoints should be available for drawing — the choice "
-            "is written to data.yaml and used everywhere from auto-annotation to "
-            "the skeleton overlay.\n\n"
-            "All keypoints are selected by default."
+            "Declare how many keypoints you'll annotate, then choose exactly those "
+            "— the choice is written to data.yaml and used everywhere from "
+            "auto-annotation to the skeleton overlay."
         )
         body.setObjectName("dialog_body")
         body.setWordWrap(True)
         body.setAlignment(Qt.AlignmentFlag.AlignCenter)
         inner.addWidget(body)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFixedHeight(280)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        kw = QWidget()
-        kl = QVBoxLayout(kw)
-        kl.setSpacing(3)
-
-        preselected_set = set(preselected) if preselected else None
-        self._checks: dict[int, QCheckBox] = {}
-        for idx in range(NUM_KEYPOINTS):
-            name = KEYPOINT_NAMES.get(idx, str(idx))
-            cb = QCheckBox(f"  {idx:02d}  {name}")
-            cb.setChecked(preselected_set is None or name in preselected_set)
-            kl.addWidget(cb)
-            self._checks[idx] = cb
-        scroll.setWidget(kw)
-        inner.addWidget(scroll)
-
-        sel_row = QHBoxLayout()
-        sel_all = QPushButton("Select All")
-        sel_all.clicked.connect(lambda: [cb.setChecked(True) for cb in self._checks.values()])
-        desel_all = QPushButton("Deselect All")
-        desel_all.clicked.connect(lambda: [cb.setChecked(False) for cb in self._checks.values()])
-        sel_row.addWidget(sel_all)
-        sel_row.addWidget(desel_all)
-        inner.addLayout(sel_row)
-
-        self._err = QLabel("")
-        self._err.setObjectName("accent_red")
-        self._err.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        inner.addWidget(self._err)
-
-        btn_row = QHBoxLayout()
-        ok = QPushButton("> Save selection")
-        ok.setObjectName("primary_button")
-        ok.setDefault(True)
-        ok.setAutoDefault(True)
-        ok.clicked.connect(self._on_ok)
-        cancel = QPushButton("Use all keypoints")
-        cancel.setAutoDefault(False)
-        cancel.clicked.connect(self._on_use_all)
-        btn_row.addWidget(ok)
-        btn_row.addWidget(cancel)
-        inner.addLayout(btn_row)
-        self._focus_target = ok
+        self._panel = KeypointSelectionPanel(preselected=preselected)
+        self._panel.proceeded.connect(self._on_proceeded)
+        self._panel.cancelled.connect(self.reject)
+        inner.addWidget(self._panel)
 
         outer.addWidget(frame, alignment=Qt.AlignmentFlag.AlignCenter)
-
-    def showEvent(self, event) -> None:  # noqa: D401
-        super().showEvent(event)
-        self._focus_target.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def keyPressEvent(self, event) -> None:  # noqa: D401
         if event.key() == Qt.Key.Key_Escape:
@@ -125,16 +76,14 @@ class KptSelectionDialog(QDialog):
             return
         super().keyPressEvent(event)
 
-    def _on_ok(self) -> None:
-        chosen = [KEYPOINT_NAMES[i] for i, cb in sorted(self._checks.items()) if cb.isChecked()]
-        if not chosen:
-            self._err.setText("At least one keypoint must be selected, Annotator.")
-            return
-        self._selected = chosen
-        self.accept()
+    def _on_proceeded(self, names) -> None:
+        # None = "use all keypoints" → expand to the full active schema.
+        if names is None:
+            from profannotate.config.skeleton import get_active_schema
 
-    def _on_use_all(self) -> None:
-        self._selected = [KEYPOINT_NAMES[i] for i in sorted(KEYPOINT_NAMES)]
+            self._selected = get_active_schema().names_in_order()
+        else:
+            self._selected = list(names)
         self.accept()
 
     def selected_names(self) -> list[str] | None:

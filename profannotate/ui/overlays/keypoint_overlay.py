@@ -9,7 +9,7 @@ from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
 from profannotate.config.constants import KEYPOINT_SNAP_RADIUS_PX
-from profannotate.config.skeleton import KEYPOINT_NAMES, SKELETON_CONNECTIONS
+from profannotate.config.skeleton import connections_for, get_active_schema
 from profannotate.core.annotation.models import Keypoint
 from profannotate.utils.color import keypoint_color, skeleton_color
 
@@ -39,18 +39,13 @@ class KeypointOverlay(QGraphicsItem):
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         self.setAcceptHoverEvents(True)
 
+        schema = get_active_schema()
         if active_kpt_names:
             self._kpt_names = active_kpt_names
-            # Remap skeleton connections to indices within the active subset
-            name_to_new: dict[str, int] = {n: i for i, n in enumerate(active_kpt_names)}
-            self._connections: list[tuple[int, int]] = [
-                (name_to_new[KEYPOINT_NAMES[a]], name_to_new[KEYPOINT_NAMES[b]])
-                for a, b in SKELETON_CONNECTIONS
-                if KEYPOINT_NAMES.get(a) in name_to_new and KEYPOINT_NAMES.get(b) in name_to_new
-            ]
+            self._connections: list[tuple[int, int]] = connections_for(active_kpt_names)
         else:
-            self._kpt_names = [KEYPOINT_NAMES.get(i, str(i)) for i in range(len(keypoints))]
-            self._connections = list(SKELETON_CONNECTIONS)
+            self._kpt_names = [schema.keypoint_names.get(i, str(i)) for i in range(len(keypoints))]
+            self._connections = list(schema.connections)
 
         self._compute_bounds()
 

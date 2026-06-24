@@ -50,6 +50,34 @@ class BBox:
         h = (y2 - y1) / img_h
         return cls(cx, cy, w, h).clamp()
 
+    @classmethod
+    def from_keypoints(
+        cls, keypoints: list, padding: float = 0.0
+    ) -> Optional["BBox"]:
+        """Tight (normalized) box wrapping the usable keypoints, padded + clamped.
+
+        Usable = present (not None), labeled (visibility > 0), and not the
+        (0, 0) sentinel. Returns None if no keypoint qualifies.
+        """
+        xs: list[float] = []
+        ys: list[float] = []
+        for kp in keypoints or []:
+            if kp is None or getattr(kp, "visibility", 0) <= 0:
+                continue
+            if kp.x == 0 and kp.y == 0:
+                continue
+            xs.append(kp.x)
+            ys.append(kp.y)
+        if not xs:
+            return None
+        x1, x2 = min(xs) - padding, max(xs) + padding
+        y1, y2 = min(ys) - padding, max(ys) + padding
+        cx = (x1 + x2) / 2
+        cy = (y1 + y2) / 2
+        w = x2 - x1
+        h = y2 - y1
+        return cls(cx, cy, w, h).clamp()
+
 
 @dataclass
 class Keypoint:

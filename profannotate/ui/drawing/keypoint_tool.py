@@ -10,8 +10,6 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QFontMetrics, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QGraphicsScene
 
-from profannotate.config.constants import NUM_KEYPOINTS
-from profannotate.config.skeleton import KEYPOINT_NAMES
 from profannotate.core.annotation.models import Keypoint
 from profannotate.utils.color import keypoint_color
 
@@ -79,7 +77,9 @@ class KeypointTool:
         if active_kpt_names:
             self._active_names = active_kpt_names
         else:
-            self._active_names = [KEYPOINT_NAMES[i] for i in range(NUM_KEYPOINTS)]
+            from profannotate.config.skeleton import get_active_schema
+
+            self._active_names = get_active_schema().names_in_order()
 
         self._num_active = len(self._active_names)
         self._current_idx = 0

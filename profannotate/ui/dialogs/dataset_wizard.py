@@ -11,6 +11,7 @@ time roughly in half on commodity SSDs.
 from __future__ import annotations
 
 import copy
+import logging
 import os
 import random
 import shutil
@@ -34,9 +35,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from profannotate.config.constants import NUM_KEYPOINTS
-from profannotate.config.skeleton import KEYPOINT_NAMES
+from profannotate.config.skeleton import get_active_schema
 from profannotate.core.annotation.models import Modality
+
+logger = logging.getLogger(__name__)
 
 # ── Source analysis ───────────────────────────────────────────────────────────
 
@@ -95,12 +97,23 @@ def _reindex_keypoints_for_selection(
     annotations: list,
     selected_kpt_names: list[str],
 ) -> list:
-    """Filter/reindex 19-kpt model output to only the selected subset."""
-    from profannotate.core.annotation.models import Annotation
+    """Filter/reindex full-schema model output to only the selected subset.
 
-    name_to_orig: dict[str, int] = {v: k for k, v in KEYPOINT_NAMES.items()}
+    When the subset is smaller than the model's full keypoint set, the bbox is
+    tightened to wrap the surviving keypoints — but only for instances WITHOUT a
+    segmentation mask (a face-sized box around a full-body mask would be
+    inconsistent, so the original box is kept there).
+    """
+    from profannotate.config.constants import KEYPOINT_BBOX_PADDING
+    from profannotate.config.skeleton import get_active_schema
+    from profannotate.core.annotation.models import BBox
+
+    schema = get_active_schema()
+    name_to_orig: dict[str, int] = {v: k for k, v in schema.keypoint_names.items()}
     orig_indices = [name_to_orig[n] for n in selected_kpt_names if n in name_to_orig]
+    is_subset = len(orig_indices) < schema.count
 
+    skipped_masked = 0
     result = []
     for ann in annotations:
         new = copy.deepcopy(ann)
@@ -108,7 +121,23 @@ def _reindex_keypoints_for_selection(
             new.keypoints = [
                 new.keypoints[i] if i < len(new.keypoints) else None for i in orig_indices
             ]
+            if is_subset:
+                if new.mask is not None:
+                    skipped_masked += 1
+                else:
+                    tightened = BBox.from_keypoints(
+                        new.keypoints, padding=KEYPOINT_BBOX_PADDING
+                    )
+                    if tightened is not None:
+                        new.bbox = tightened
         result.append(new)
+
+    if skipped_masked:
+        logger.info(
+            "Kept original bbox for %d masked instance(s); subset bbox-tighten "
+            "only applies to mask-free annotations.",
+            skipped_masked,
+        )
     return result
 
 
@@ -548,65 +577,20 @@ class _KptSelectionPage(_Page):
         self._layout.addWidget(self._title("Select Keypoints to Annotate"))
         self._layout.addWidget(
             self._body(
-                "Choose which keypoints should be included in this dataset, Annotator.\n\n"
-                "Deselected keypoints will be excluded from the drawing sequence and "
-                "skeleton connections. The choice is recorded in data.yaml.\n\n"
-                "All keypoints are selected by default — uncheck any you wish to omit."
+                "Declare how many keypoints you'll annotate, then choose exactly "
+                "those, Annotator. The diagram shows which keypoints you've picked "
+                "and where they sit on the body. The choice is recorded in data.yaml "
+                "and drives the drawing sequence and skeleton connections."
             )
         )
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFixedHeight(280)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        kw = QWidget()
-        kl = QVBoxLayout(kw)
-        kl.setSpacing(3)
+        from profannotate.ui.widgets.kpt_selection_panel import KeypointSelectionPanel
 
-        self._checks: dict[int, QCheckBox] = {}
-        for idx in range(NUM_KEYPOINTS):
-            name = KEYPOINT_NAMES.get(idx, str(idx))
-            cb = QCheckBox(f"  {idx:02d}  {name}")
-            cb.setChecked(True)
-            kl.addWidget(cb)
-            self._checks[idx] = cb
-
-        scroll.setWidget(kw)
-        self._layout.addWidget(scroll)
-
-        # Select / deselect all shortcuts
-        sel_row = QHBoxLayout()
-        sel_all = QPushButton("Select All")
-        sel_all.clicked.connect(lambda: [cb.setChecked(True) for cb in self._checks.values()])
-        desel_all = QPushButton("Deselect All")
-        desel_all.clicked.connect(lambda: [cb.setChecked(False) for cb in self._checks.values()])
-        sel_row.addWidget(sel_all)
-        sel_row.addWidget(desel_all)
-        self._layout.addLayout(sel_row)
-
-        self._err = QLabel("")
-        self._err.setObjectName("accent_red")
-        self._err.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._layout.addWidget(self._err)
-
-        ok = QPushButton("> Proceed with selected keypoints")
-        ok.setObjectName("primary_button")
-        ok.clicked.connect(self._on_ok)
-        cancel = QPushButton("Cancel")
-        cancel.clicked.connect(self.cancelled)
-        self._layout.addLayout(self._btn_row(ok, cancel))
-
-    def _on_ok(self) -> None:
-        selected = [KEYPOINT_NAMES[i] for i, cb in sorted(self._checks.items()) if cb.isChecked()]
-        if not selected:
-            self._err.setText("At least one keypoint must be selected, Annotator.")
-            return
-        self._err.setText("")
-        # If all 19 selected, pass None (no filtering needed)
-        if len(selected) == NUM_KEYPOINTS:
-            self.proceeded.emit(None)
-        else:
-            self.proceeded.emit(selected)
+        self._panel = KeypointSelectionPanel(preselected=None)
+        # Re-emit the panel's flow signals as this page's existing contract.
+        self._panel.proceeded.connect(self.proceeded)
+        self._panel.cancelled.connect(self.cancelled)
+        self._layout.addWidget(self._panel)
 
 
 # ── Split page ────────────────────────────────────────────────────────────────
@@ -874,7 +858,7 @@ class DatasetWizard(QDialog):
 
         if Modality.KEYPOINTS in self._modalities:
             if self._selected_kpt_names is None:
-                lines.append(f"Keypoints: all {NUM_KEYPOINTS}")
+                lines.append(f"Keypoints: all {get_active_schema().count}")
             else:
                 preview = ", ".join(self._selected_kpt_names[:6])
                 suffix = (

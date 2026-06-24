@@ -17,7 +17,6 @@ from pathlib import Path
 
 from profannotate.config.constants import (
     DATA_YAML_FILENAME,
-    NUM_KEYPOINTS,
     YOLO_IMAGE_EXTS,
     YOLO_IMAGES_SUBDIR,
     YOLO_LABEL_EXT,
@@ -25,11 +24,11 @@ from profannotate.config.constants import (
     YOLO_TRAIN_DIR,
     YOLO_VAL_DIR,
 )
+from profannotate.config.skeleton import get_active_schema
 from profannotate.utils.image import derive_label_path, is_image_corrupted
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_NUM_KPT = NUM_KEYPOINTS
 _LBL_EXT_LEN = len(YOLO_LABEL_EXT)
 
 
@@ -118,7 +117,9 @@ class DatasetIndex:
 
     @property
     def num_keypoints(self) -> int:
-        return len(self.active_keypoint_names) if self.active_keypoint_names else _DEFAULT_NUM_KPT
+        if self.active_keypoint_names:
+            return len(self.active_keypoint_names)
+        return get_active_schema().count
 
     @property
     def train_entries(self) -> list[ImageEntry]:
@@ -170,7 +171,6 @@ def _apply_yaml_kpt_config(index: DatasetIndex) -> None:
     If both are missing, infer the count from existing label files (or fall back
     to the full skeleton) and write the result back so the yaml is canonical.
     """
-    from profannotate.config.skeleton import KEYPOINT_NAMES
     from profannotate.core.dataset.yaml_handler import (
         _detect_num_keypoints,
         load_yaml,
@@ -191,7 +191,7 @@ def _apply_yaml_kpt_config(index: DatasetIndex) -> None:
 
     if isinstance(shape, list) and len(shape) == 2 and isinstance(shape[0], int):
         n = shape[0]
-        default_names = [KEYPOINT_NAMES[i] for i in sorted(KEYPOINT_NAMES)]
+        default_names = get_active_schema().names_in_order()
         synthesized = (
             default_names[:n] if n <= len(default_names) else [f"kpt_{i}" for i in range(n)]
         )
@@ -201,7 +201,7 @@ def _apply_yaml_kpt_config(index: DatasetIndex) -> None:
         return
 
     # Neither key present — infer from labels, fall back to full skeleton.
-    default_names = [KEYPOINT_NAMES[i] for i in sorted(KEYPOINT_NAMES)]
+    default_names = get_active_schema().names_in_order()
     detected = _detect_num_keypoints(index.root)
     if detected is not None and detected != len(default_names):
         synthesized = [f"kpt_{i}" for i in range(detected)]

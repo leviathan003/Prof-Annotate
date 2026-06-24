@@ -22,7 +22,7 @@ from PySide6.QtGui import (
 )
 from PySide6.QtWidgets import QGraphicsItem, QStyleOptionGraphicsItem, QWidget
 
-from profannotate.config.skeleton import KEYPOINT_NAMES, SKELETON_CONNECTIONS
+from profannotate.config.skeleton import connections_for, get_active_schema
 from profannotate.core.annotation.models import Annotation
 from profannotate.utils.color import diff_new_color, diff_old_color
 
@@ -46,17 +46,13 @@ class DiffOverlay(QGraphicsItem):
         self._w = img_w
         self._h = img_h
 
+        schema = get_active_schema()
         if active_kpt_names:
-            name_to_new: dict[str, int] = {n: i for i, n in enumerate(active_kpt_names)}
-            self._connections: list[tuple[int, int]] = [
-                (name_to_new[KEYPOINT_NAMES[a]], name_to_new[KEYPOINT_NAMES[b]])
-                for a, b in SKELETON_CONNECTIONS
-                if KEYPOINT_NAMES.get(a) in name_to_new and KEYPOINT_NAMES.get(b) in name_to_new
-            ]
+            self._connections: list[tuple[int, int]] = connections_for(active_kpt_names)
             self._kpt_names = active_kpt_names
         else:
-            self._connections = list(SKELETON_CONNECTIONS)
-            self._kpt_names = [KEYPOINT_NAMES.get(i, str(i)) for i in range(64)]
+            self._connections = list(schema.connections)
+            self._kpt_names = [schema.keypoint_names.get(i, str(i)) for i in range(schema.count)]
 
     def boundingRect(self) -> QRectF:
         return QRectF(0, 0, self._w, self._h)
