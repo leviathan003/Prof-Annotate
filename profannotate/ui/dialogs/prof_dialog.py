@@ -120,7 +120,7 @@ class ProfDialog(QDialog):
         if secondary_label:
             sec_btn = QPushButton(secondary_label)
             sec_btn.setObjectName("arcane_button_dim")
-            sec_btn.setAutoDefault(False)
+            sec_btn.setAutoDefault(True)
             sec_btn.clicked.connect(self._on_secondary)
             button_row.addWidget(sec_btn)
 
@@ -150,12 +150,16 @@ class ProfDialog(QDialog):
             self._secondary_cb()
         self.reject()
 
-    def keyPressEvent(self, event) -> None:  # noqa: D401
+    def keyPressEvent(self, event) -> None:
         if event.key() == Qt.Key.Key_Escape:
             self._on_secondary()
             return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-            self._on_primary()
+            focused = self.focusWidget()
+            if isinstance(focused, QPushButton):
+                focused.click()
+            else:
+                self._on_primary()
             return
         super().keyPressEvent(event)
 

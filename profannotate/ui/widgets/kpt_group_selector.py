@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -53,9 +54,7 @@ class _CollapsibleSection(QWidget):
         layout.addWidget(self._body)
 
     def _on_toggled(self, checked: bool) -> None:
-        self._toggle.setArrowType(
-            Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow
-        )
+        self._toggle.setArrowType(Qt.ArrowType.DownArrow if checked else Qt.ArrowType.RightArrow)
         self._body.setVisible(checked)
 
 
@@ -76,16 +75,27 @@ class KeypointGroupSelector(QWidget):
         # Preset buttons — one per schema group (Face, Hands, Whole body, …).
         # Clicking a preset selects EXACTLY that group's keypoints.
         if self._schema.groups:
-            presets_row = QHBoxLayout()
+            presets_scroll = QScrollArea()
+            presets_scroll.setFixedHeight(36)
+            presets_scroll.setFrameShape(QFrame.Shape.NoFrame)
+            presets_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+            presets_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            presets_scroll.setWidgetResizable(True)
+
+            presets_container = QWidget()
+            presets_row = QHBoxLayout(presets_container)
+            presets_row.setContentsMargins(0, 0, 0, 0)
             presets_row.setSpacing(6)
             presets_row.addWidget(QLabel("Presets:"))
             for label, members in self._schema.groups.items():
                 btn = QPushButton(label)
                 btn.setObjectName("preset_button")
+                btn.setSizePolicy(QSizePolicy.Policy.Minimum, QSizePolicy.Policy.Fixed)
                 btn.clicked.connect(lambda _=False, m=list(members): self.set_selected(m))
                 presets_row.addWidget(btn)
             presets_row.addStretch(1)
-            root.addLayout(presets_row)
+            presets_scroll.setWidget(presets_container)
+            root.addWidget(presets_scroll)
 
         # Scrollable region sections.
         scroll = QScrollArea()
@@ -158,7 +168,11 @@ class KeypointGroupSelector(QWidget):
 
     def selected_names(self) -> list[str]:
         """Checked names in canonical schema order."""
-        return [n for n in self._schema.names_in_order() if self._checks.get(n, None) and self._checks[n].isChecked()]
+        return [
+            n
+            for n in self._schema.names_in_order()
+            if self._checks.get(n, None) and self._checks[n].isChecked()
+        ]
 
     def has_any(self) -> bool:
         return any(cb.isChecked() for cb in self._checks.values())

@@ -22,7 +22,7 @@ from profannotate.utils.color import keypoint_color, skeleton_color
 
 # Region label anchors (normalized) — purely cosmetic captions for WB133.
 _REGION_LABELS = {
-    "Face": (0.16, 0.015),
+    "Face": (0.50, 0.015),
     "Body": (0.50, 0.015),
     "L-Hand": (0.15, 0.55),
     "R-Hand": (0.84, 0.55),
@@ -37,7 +37,7 @@ class SkeletonPreview(QWidget):
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(220, 280)
+        self.setMinimumSize(340, 380)
         self._schema = get_active_schema()
         self._pose = reference_pose(self._schema)
         self._selected: set[str] = set()
@@ -109,7 +109,10 @@ class SkeletonPreview(QWidget):
             painter.setPen(QPen(QColor(170, 170, 170, 200)))
             for label, anchor in _REGION_LABELS.items():
                 painter.drawText(
-                    QRectF(self._to_px(anchor, w, h, pad) - QPointF(30, 8), self._to_px(anchor, w, h, pad) + QPointF(30, 8)),
+                    QRectF(
+                        self._to_px(anchor, w, h, pad) - QPointF(30, 8),
+                        self._to_px(anchor, w, h, pad) + QPointF(30, 8),
+                    ),
                     Qt.AlignmentFlag.AlignCenter,
                     label,
                 )

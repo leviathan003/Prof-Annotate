@@ -15,6 +15,7 @@ from typing import Callable, Optional
 from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt
 from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -31,7 +32,6 @@ from profannotate.ui.prof_annotate import (
     TUTORIAL_OUTRO,
     presence,
 )
-
 
 # ── Step model ───────────────────────────────────────────────────────────────
 
@@ -253,7 +253,7 @@ class _ProfSpeechPanel(QFrame):
 
         self._skip_btn = QPushButton("Skip Tutorial")
         self._skip_btn.setObjectName("arcane_button_dim")
-        self._skip_btn.setAutoDefault(False)
+        self._skip_btn.setAutoDefault(True)
         self._skip_btn.clicked.connect(on_skip)
         btn_row.addWidget(self._skip_btn)
 
@@ -545,24 +545,15 @@ class _HostFilter(QObject):
         super().__init__(parent)
         self._ctrl = controller
 
-    def eventFilter(self, _obj, event) -> bool:  # noqa: D401
+    def eventFilter(self, _obj, event) -> bool:
         t = event.type()
         if t in (QEvent.Type.Resize, QEvent.Type.Move):
             self._ctrl.reposition()
             return False
-
         if t == QEvent.Type.KeyPress and self._ctrl.is_active():
-            key = event.key()
-            if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
-                self._ctrl._on_next()
-                return True
-            if key == Qt.Key.Key_Escape:
-                self._ctrl.cancel()
-                return True
-            if key in (Qt.Key.Key_Right, Qt.Key.Key_Down):
-                self._ctrl._on_next()
-                return True
-            if key in (Qt.Key.Key_Left, Qt.Key.Key_Up):
-                self._ctrl._on_back()
-                return True
+            if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+                focused = QApplication.focusWidget()
+                if isinstance(focused, QPushButton):
+                    focused.click()
+                    return True
         return False
