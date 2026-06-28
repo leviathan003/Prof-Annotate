@@ -125,9 +125,7 @@ def _reindex_keypoints_for_selection(
                 if new.mask is not None:
                     skipped_masked += 1
                 else:
-                    tightened = BBox.from_keypoints(
-                        new.keypoints, padding=KEYPOINT_BBOX_PADDING
-                    )
+                    tightened = BBox.from_keypoints(new.keypoints, padding=KEYPOINT_BBOX_PADDING)
                     if tightened is not None:
                         new.bbox = tightened
         result.append(new)

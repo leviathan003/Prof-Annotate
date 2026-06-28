@@ -94,16 +94,38 @@ _BODY_19_NAMES: dict[int, str] = {
 }
 
 _BODY_19_CONNECTIONS: list[tuple[int, int]] = [
-    (0, 1), (0, 2), (1, 3), (2, 4), (1, 5), (2, 6),
-    (5, 7), (6, 8), (7, 8),
-    (7, 9), (8, 10), (9, 11), (10, 12),
-    (7, 13), (8, 14), (13, 14),
-    (13, 15), (14, 16), (15, 17), (16, 18),
+    (0, 1),
+    (0, 2),
+    (1, 3),
+    (2, 4),
+    (1, 5),
+    (2, 6),
+    (5, 7),
+    (6, 8),
+    (7, 8),
+    (7, 9),
+    (8, 10),
+    (9, 11),
+    (10, 12),
+    (7, 13),
+    (8, 14),
+    (13, 14),
+    (13, 15),
+    (14, 16),
+    (15, 17),
+    (16, 18),
 ]
 
 _BODY_19_SYMMETRY: list[tuple[int, int]] = [
-    (1, 2), (3, 4), (5, 6), (7, 8), (9, 10),
-    (11, 12), (13, 14), (15, 16), (17, 18),
+    (1, 2),
+    (3, 4),
+    (5, 6),
+    (7, 8),
+    (9, 10),
+    (11, 12),
+    (13, 14),
+    (15, 16),
+    (17, 18),
 ]
 
 BODY_19 = KeypointSchema(
@@ -112,8 +134,15 @@ BODY_19 = KeypointSchema(
     connections=_BODY_19_CONNECTIONS,
     symmetry_pairs=_BODY_19_SYMMETRY,
     groups={
-        "Face": ["nose", "left_eye", "right_eye", "left_mouth", "right_mouth",
-                 "left_ear", "right_ear"],
+        "Face": [
+            "nose",
+            "left_eye",
+            "right_eye",
+            "left_mouth",
+            "right_mouth",
+            "left_ear",
+            "right_ear",
+        ],
         "Hands": ["left_wrist", "right_wrist"],
         "Whole body": [_BODY_19_NAMES[i] for i in range(19)],
     },
@@ -132,14 +161,31 @@ BODY_19 = KeypointSchema(
 # built programmatically below to avoid transcription errors across 130+ links.
 
 _WB_BODY = [
-    "nose", "left_eye", "right_eye", "left_ear", "right_ear",
-    "left_shoulder", "right_shoulder", "left_elbow", "right_elbow",
-    "left_wrist", "right_wrist", "left_hip", "right_hip",
-    "left_knee", "right_knee", "left_ankle", "right_ankle",
+    "nose",
+    "left_eye",
+    "right_eye",
+    "left_ear",
+    "right_ear",
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
 ]
 _WB_FEET = [
-    "left_big_toe", "left_small_toe", "left_heel",
-    "right_big_toe", "right_small_toe", "right_heel",
+    "left_big_toe",
+    "left_small_toe",
+    "left_heel",
+    "right_big_toe",
+    "right_small_toe",
+    "right_heel",
 ]
 _FACE_OFFSET = 23
 _LHAND_OFFSET = 91
@@ -166,9 +212,25 @@ def _build_wholebody_connections() -> list[tuple[int, int]]:
 
     # Body (COCO-17 skeleton)
     c += [
-        (15, 13), (13, 11), (16, 14), (14, 12), (11, 12),
-        (5, 11), (6, 12), (5, 6), (5, 7), (6, 8), (7, 9), (8, 10),
-        (1, 2), (0, 1), (0, 2), (1, 3), (2, 4), (3, 5), (4, 6),
+        (15, 13),
+        (13, 11),
+        (16, 14),
+        (14, 12),
+        (11, 12),
+        (5, 11),
+        (6, 12),
+        (5, 6),
+        (5, 7),
+        (6, 8),
+        (7, 9),
+        (8, 10),
+        (1, 2),
+        (0, 1),
+        (0, 2),
+        (1, 3),
+        (2, 4),
+        (3, 5),
+        (4, 6),
     ]
     # Feet: ankle → big toe / small toe / heel
     c += [(15, 17), (15, 18), (15, 19), (16, 20), (16, 21), (16, 22)]
@@ -183,23 +245,23 @@ def _build_wholebody_connections() -> list[tuple[int, int]]:
         if closed and len(idxs) > 2:
             c.append((f(idxs[-1]), f(idxs[0])))
 
-    chain(list(range(0, 17)))          # jaw contour
-    chain(list(range(17, 22)))         # left eyebrow
-    chain(list(range(22, 27)))         # right eyebrow
-    chain(list(range(27, 31)))         # nose bridge
-    chain(list(range(31, 36)))         # lower nose
-    chain(list(range(36, 42)), True)   # left eye
-    chain(list(range(42, 48)), True)   # right eye
-    chain(list(range(48, 60)), True)   # outer lip
-    chain(list(range(60, 68)), True)   # inner lip
+    chain(list(range(0, 17)))  # jaw contour
+    chain(list(range(17, 22)))  # left eyebrow
+    chain(list(range(22, 27)))  # right eyebrow
+    chain(list(range(27, 31)))  # nose bridge
+    chain(list(range(31, 36)))  # lower nose
+    chain(list(range(36, 42)), True)  # left eye
+    chain(list(range(42, 48)), True)  # right eye
+    chain(list(range(48, 60)), True)  # outer lip
+    chain(list(range(60, 68)), True)  # inner lip
 
     # Hands: root → each finger base, then along the finger.
     for off in (_LHAND_OFFSET, _RHAND_OFFSET):
         for fi in range(5):  # 5 fingers
             base = off + 1 + fi * 4
-            c.append((off, base))                       # root → finger joint 1
+            c.append((off, base))  # root → finger joint 1
             for j in range(3):
-                c.append((base + j, base + j + 1))      # along the finger
+                c.append((base + j, base + j + 1))  # along the finger
     return c
 
 
@@ -208,7 +270,7 @@ def _build_wholebody_symmetry(names: dict[int, str]) -> list[tuple[int, int]]:
     out: list[tuple[int, int]] = []
     for nm, idx in name_to_idx.items():
         if nm.startswith("left_"):
-            mirror = "right_" + nm[len("left_"):]
+            mirror = "right_" + nm[len("left_") :]
             if mirror in name_to_idx:
                 out.append((idx, name_to_idx[mirror]))
     return out

@@ -38,9 +38,7 @@ class ErrorDialog(QDialog):
         outer_h.setSpacing(18)
 
         # ── Prof. portrait column (concerned variant — same art, red name) ──
-        prof_col, _ = build_prof_column(
-            parent, size="compact", name_text="PROF. ANNOTATE"
-        )
+        prof_col, _ = build_prof_column(parent, size="compact", name_text="PROF. ANNOTATE")
         outer_h.addWidget(prof_col)
 
         # ── Right column ─────────────────────────────────────────────────────

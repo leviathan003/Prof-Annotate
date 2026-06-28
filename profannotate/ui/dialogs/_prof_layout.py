@@ -23,7 +23,6 @@ from profannotate.ui.prof_annotate import (
 )
 from profannotate.utils.ui_scaling import portrait_column_width, prof_portrait_tier
 
-
 # ── Screen sampling ──────────────────────────────────────────────────────────
 
 

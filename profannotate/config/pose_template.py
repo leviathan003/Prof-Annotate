@@ -27,7 +27,9 @@ _LHAND_RECT = (0.02, 0.58, 0.28, 0.96)
 _RHAND_RECT = (0.70, 0.58, 0.98, 0.96)
 
 
-def _map(local: tuple[float, float], rect: tuple[float, float, float, float]) -> tuple[float, float]:
+def _map(
+    local: tuple[float, float], rect: tuple[float, float, float, float]
+) -> tuple[float, float]:
     lx, ly = local
     x0, y0, x1, y1 = rect
     return (x0 + lx * (x1 - x0), y0 + ly * (y1 - y0))
@@ -38,18 +40,31 @@ def _map(local: tuple[float, float], rect: tuple[float, float, float, float]) ->
 # left — this is a schematic legend, not a mirrored medical figure.
 _BODY_LOCAL: dict[str, tuple[float, float]] = {
     "nose": (0.50, 0.07),
-    "left_eye": (0.45, 0.05), "right_eye": (0.55, 0.05),
-    "left_ear": (0.40, 0.07), "right_ear": (0.60, 0.07),
+    "left_eye": (0.45, 0.05),
+    "right_eye": (0.55, 0.05),
+    "left_ear": (0.40, 0.07),
+    "right_ear": (0.60, 0.07),
     # BODY_19 extras (mouth corners) — harmless for WB133 (names absent there).
-    "left_mouth": (0.46, 0.10), "right_mouth": (0.54, 0.10),
-    "left_shoulder": (0.38, 0.20), "right_shoulder": (0.62, 0.20),
-    "left_elbow": (0.30, 0.33), "right_elbow": (0.70, 0.33),
-    "left_wrist": (0.26, 0.46), "right_wrist": (0.74, 0.46),
-    "left_hip": (0.43, 0.52), "right_hip": (0.57, 0.52),
-    "left_knee": (0.41, 0.72), "right_knee": (0.59, 0.72),
-    "left_ankle": (0.40, 0.90), "right_ankle": (0.60, 0.90),
-    "left_heel": (0.40, 0.94), "left_big_toe": (0.36, 0.98), "left_small_toe": (0.44, 0.98),
-    "right_heel": (0.60, 0.94), "right_big_toe": (0.64, 0.98), "right_small_toe": (0.56, 0.98),
+    "left_mouth": (0.46, 0.10),
+    "right_mouth": (0.54, 0.10),
+    "left_shoulder": (0.38, 0.20),
+    "right_shoulder": (0.62, 0.20),
+    "left_elbow": (0.30, 0.33),
+    "right_elbow": (0.70, 0.33),
+    "left_wrist": (0.26, 0.46),
+    "right_wrist": (0.74, 0.46),
+    "left_hip": (0.43, 0.52),
+    "right_hip": (0.57, 0.52),
+    "left_knee": (0.41, 0.72),
+    "right_knee": (0.59, 0.72),
+    "left_ankle": (0.40, 0.90),
+    "right_ankle": (0.60, 0.90),
+    "left_heel": (0.40, 0.94),
+    "left_big_toe": (0.36, 0.98),
+    "left_small_toe": (0.44, 0.98),
+    "right_heel": (0.60, 0.94),
+    "right_big_toe": (0.64, 0.98),
+    "right_small_toe": (0.56, 0.98),
 }
 
 
