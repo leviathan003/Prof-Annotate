@@ -770,9 +770,7 @@ class MainWindow(QMainWindow):
         self._load_worker.chunk_ready.connect(
             self._on_chunk_ready, Qt.ConnectionType.QueuedConnection
         )
-        self._load_worker.status.connect(
-            self._on_index_status, Qt.ConnectionType.QueuedConnection
-        )
+        self._load_worker.status.connect(self._on_index_status, Qt.ConnectionType.QueuedConnection)
         self._load_worker.read_only.connect(
             self._on_dataset_read_only, Qt.ConnectionType.QueuedConnection
         )

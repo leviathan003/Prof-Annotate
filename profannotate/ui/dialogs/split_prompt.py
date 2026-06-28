@@ -50,8 +50,7 @@ class SplitPrompt(QDialog):
         inner.addWidget(t)
 
         body = QLabel(
-            "Enter your desired train/val split distribution\n"
-            "in percentage (e.g. 80/20 or 85/15)."
+            "Enter your desired train/val split distribution\nin percentage (e.g. 80/20 or 85/15)."
         )
         body.setObjectName("dialog_body")
         body.setAlignment(Qt.AlignmentFlag.AlignLeft)
