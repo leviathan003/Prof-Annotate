@@ -112,7 +112,7 @@ profannotate/
 │   └── setup.sh
 ├── assets/                 Fonts, icons, QSS theme
 ├── models/                 ONNX model (wb_s_full100_best.onnx)
-├── src/
+├── profannotate/
 │   ├── config/             constants, shortcuts, skeleton
 │   ├── core/
 │   │   ├── annotation/     models, parser, writer, undo
