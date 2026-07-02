@@ -51,6 +51,7 @@ def _make_session_opts():
 
     opts = ort.SessionOptions()
     opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+    opts.enable_cpu_mem_arena = False
     opts.intra_op_num_threads = 0
     opts.inter_op_num_threads = 0
     opts.log_severity_level = 3
@@ -149,8 +150,11 @@ class InferenceEngine:
             return
         schema = skeleton.schema_for_kpt_count(k)
         if schema is None:
-            logger.warning("No keypoint schema registered for K=%d; keeping %s",
-                           k, skeleton.get_active_schema().name)
+            logger.warning(
+                "No keypoint schema registered for K=%d; keeping %s",
+                k,
+                skeleton.get_active_schema().name,
+            )
             return
         skeleton.set_active_schema(schema.name)
         logger.info("Active keypoint schema: %s (K=%d)", schema.name, k)
@@ -159,6 +163,15 @@ class InferenceEngine:
         self._session = None
         self._input_name = None
         self._active_provider = None
+        import gc
+
+        gc.collect()
+        try:
+            import ctypes
+
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
         logger.info("Model unloaded.")
 
     @property
