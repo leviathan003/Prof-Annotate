@@ -18,3 +18,5 @@ docs.txt
 *.exe
 release-trigger.txt
 tests/
+build/logs/
+build/patchelf-0.17.2
