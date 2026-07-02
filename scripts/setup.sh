@@ -152,13 +152,13 @@ if [ "$GPU" = true ]; then
 fi
 
 # ── Model check
-MODEL_PATH="$ROOT/models/yolo11n_segpose.onnx"
+MODEL_PATH="$ROOT/models/wb_s_full100_best.onnx"
 if [ -f "$MODEL_PATH" ]; then
     info "ONNX model found: $MODEL_PATH"
 else
     warn "ONNX model NOT found at $MODEL_PATH"
     warn "Auto-annotation will be disabled until you place the model there."
-    warn "Expected file: models/yolo11n_segpose.onnx"
+    warn "Expected file: models/wb_s_full100_best.onnx"
 fi
 
 # ── Asset check
