@@ -64,6 +64,8 @@ class InferenceEngine:
         self._session = None
         self._input_name: Optional[str] = None
         self._active_provider: Optional[str] = None
+        self._nc = 1
+        self._nm = 32
 
     def load(self) -> None:
         if self._session is not None:
@@ -102,12 +104,23 @@ class InferenceEngine:
                     self._active_provider,
                 )
                 self._activate_schema_from_model(session)
+                self._read_head_layout(session)
                 return
             except Exception as exc:
                 last_exc = exc
                 logger.debug("Provider list %s failed: %s — trying next.", provider_list, exc)
 
         raise RuntimeError(f"Failed to load model on any provider: {last_exc}") from last_exc
+
+    def _read_head_layout(self, session) -> None:
+        """Cache nc/nm from model metadata so postprocess decodes the right
+        columns for non-bundled models (defaults match the bundled model)."""
+        try:
+            md = session.get_modelmeta().custom_metadata_map or {}
+            self._nc = int(md.get("nc", 1))
+            self._nm = int(md.get("nm", 32))
+        except Exception:
+            self._nc, self._nm = 1, 32
 
     @staticmethod
     def _activate_schema_from_model(session) -> None:
@@ -187,7 +200,7 @@ class InferenceEngine:
             raise RuntimeError("Call load() before run().")
         blob = _preprocess(image_rgb)
         outputs = self._session.run(None, {self._input_name: blob})
-        return {"raw": outputs, "input_shape": blob.shape}
+        return {"raw": outputs, "input_shape": blob.shape, "nc": self._nc, "nm": self._nm}
 
 
 def _preprocess(image_rgb: np.ndarray) -> np.ndarray:
@@ -196,7 +209,9 @@ def _preprocess(image_rgb: np.ndarray) -> np.ndarray:
     tw, th = MODEL_INPUT_SIZE
     h, w = image_rgb.shape[:2]
     scale = min(tw / w, th / h)
-    nw, nh = int(w * scale), int(h * scale)
+    # max(1, …): extreme-aspect images (e.g. 10000×1) round a side to 0,
+    # which makes cv2.resize raise and aborts the whole auto-annotate batch.
+    nw, nh = max(1, int(w * scale)), max(1, int(h * scale))
     resized = cv2.resize(image_rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
     canvas = np.full((th, tw, 3), 114, dtype=np.uint8)
     px, py = (tw - nw) // 2, (th - nh) // 2

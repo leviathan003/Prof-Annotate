@@ -328,6 +328,11 @@ class TutorialWalkthrough:
     def start(self) -> None:
         if not self._steps:
             return
+        # The Tutorial button stays clickable under the mouse-transparent
+        # overlay; a re-entrant start double-summons the Prof presence and the
+        # extra away-count is never released.
+        if self._active:
+            return
         # Intro popup first, then dive into the highlighted steps.
         from profannotate.ui.dialogs.prof_dialog import ProfDialog
 

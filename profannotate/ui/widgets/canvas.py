@@ -82,26 +82,39 @@ class _LoaderSignals(QObject):
 
 
 class _ImageLoadTask(QRunnable):
-    def __init__(self, generation: int, path: str, signals: _LoaderSignals) -> None:
+    def __init__(
+        self, generation: int, path: str, signals: _LoaderSignals, max_side: int | None = None
+    ) -> None:
         super().__init__()
         self._gen = generation
         self._path = path
         self._signals = signals
+        self._max_side = max_side
         self.setAutoDelete(True)
 
     def run(self) -> None:  # noqa: D401
-        rgb = load_image_rgb(self._path)
+        rgb = load_image_rgb(self._path, max_side=self._max_side)
         self._signals.done.emit(self._gen, self._path, rgb)
 
 
 class _RgbCache:
-    """Ordered-dict LRU keyed by image path, holding decoded RGB numpy arrays."""
+    """Ordered-dict LRU keyed by image path, holding decoded RGB numpy arrays.
 
-    def __init__(self, capacity: int) -> None:
+    Budgeted by BYTES, not entry count: a fixed entry cap let the cache grow
+    to several GB on high-resolution datasets (a 6000×4000 photo decodes to
+    ~72 MB), which swapped and then OOM-killed the process on 8 GB machines.
+    """
+
+    def __init__(self, budget_bytes: int) -> None:
         from collections import OrderedDict
 
         self._cache: "OrderedDict[str, object]" = OrderedDict()
-        self._capacity = capacity
+        self._budget = budget_bytes
+        self._used = 0
+
+    @staticmethod
+    def _size(val) -> int:
+        return int(getattr(val, "nbytes", 0))
 
     def get(self, key: str):
         if key not in self._cache:
@@ -110,19 +123,26 @@ class _RgbCache:
         return self._cache[key]
 
     def put(self, key: str, val) -> None:
-        if key in self._cache:
-            self._cache.move_to_end(key)
-            self._cache[key] = val
-            return
+        old = self._cache.pop(key, None)
+        if old is not None:
+            self._used -= self._size(old)
         self._cache[key] = val
-        while len(self._cache) > self._capacity:
-            self._cache.popitem(last=False)
+        self._used += self._size(val)
+        # Always keep the most recent entry even if it alone exceeds budget.
+        while self._used > self._budget and len(self._cache) > 1:
+            _, evicted = self._cache.popitem(last=False)
+            self._used -= self._size(evicted)
+
+    @property
+    def near_budget(self) -> bool:
+        return self._used >= self._budget * 0.8
 
     def __contains__(self, key: str) -> bool:
         return key in self._cache
 
     def clear(self) -> None:
         self._cache.clear()
+        self._used = 0
 
 
 class AnnotationCanvas(QFrame):
@@ -246,10 +266,14 @@ class AnnotationCanvas(QFrame):
         self._num_keypoints = num_keypoints
         self._active_kpt_names = active_kpt_names
         ann = parse_label_file(entry.image_path, entry.label_path, num_keypoints)
-        self._start_image_load(str(entry.image_path), ann)
+        self._start_image_load(entry.image_path, ann)
 
     def set_annotations(self, ann: ImageAnnotations) -> None:
         self._annotations = ann
+        # The new annotations may have fewer instances than the old ones;
+        # a stale index would crash every handler that does instances[sel].
+        if self._selected_instance is not None and self._selected_instance >= len(ann.instances):
+            self._deselect()
         self._rebuild_overlays()
         self._update_border()
         self.annotations_changed.emit(ann)
@@ -310,21 +334,27 @@ class AnnotationCanvas(QFrame):
     def _ensure_loader(self) -> None:
         if getattr(self, "_rgb_cache", None) is not None:
             return
-        # Cache capacity adapts to the active screen so low-end devices
-        # don't carry 60 decoded RGB arrays in RAM (≈ hundreds of MB on
-        # 4K images). Mid-tier laptops use 40, desktops 60.
+        # Byte budget adapts to the device class — entry counts don't bound
+        # memory when a single decoded photo can be 70+ MB.
         from profannotate.utils.ui_scaling import form_factor
 
         ff = form_factor()
         if ff == "tiny":
-            cache_cap = 20
+            budget = 128
         elif ff == "small":
-            cache_cap = 30
+            budget = 192
         elif ff == "medium":
-            cache_cap = 40
+            budget = 256
         else:
-            cache_cap = 60
-        self._rgb_cache = _RgbCache(capacity=cache_cap)
+            budget = 384
+        self._rgb_cache = _RgbCache(budget_bytes=budget * 1024 * 1024)
+        # JPEG draft-mode cap: decode at up to ~2× the screen's long side —
+        # imperceptible at normal zoom, and huge photos stop costing seconds
+        # of decode (and 70+ MB each) on weak CPUs.
+        from profannotate.utils.ui_scaling import screen_for
+
+        screen = screen_for(self)
+        self._decode_max_side = 2 * max(screen.width, screen.height)
         self._load_signals = _LoaderSignals()
         self._load_signals.done.connect(self._on_load_done, Qt.ConnectionType.QueuedConnection)
         self._load_gen = 0  # incremented on every foreground request
@@ -350,7 +380,7 @@ class AnnotationCanvas(QFrame):
 
         if path not in self._inflight:
             self._inflight.add(path)
-            self._pool.start(_ImageLoadTask(gen, path, self._load_signals))
+            self._pool.start(_ImageLoadTask(gen, path, self._load_signals, self._decode_max_side))
 
     def prefetch_paths(self, paths: list[str]) -> None:
         """Kick off background loads for `paths` that aren't already cached
@@ -363,12 +393,16 @@ class AnnotationCanvas(QFrame):
             return
         self._ensure_loader()
         for path in paths:
+            # Prefetching past the byte budget just decodes images that get
+            # evicted immediately — wasted CPU and memory churn.
+            if self._rgb_cache.near_budget:
+                return
             if not path or path in self._rgb_cache or path in self._inflight:
                 continue
             self._inflight.add(path)
             # generation 0 = prefetch (never matches the foreground gen, so
             # the slot only stores into the cache and does not repaint).
-            self._pool.start(_ImageLoadTask(0, path, self._load_signals))
+            self._pool.start(_ImageLoadTask(0, path, self._load_signals, self._decode_max_side))
 
     def _on_load_done(self, gen: int, path: str, rgb) -> None:
         self._inflight.discard(path)

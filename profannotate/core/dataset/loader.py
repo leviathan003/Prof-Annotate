@@ -11,6 +11,7 @@ into a stem-set instead of doing per-image `exists() + stat()`. On a
 from __future__ import annotations
 
 import logging
+import operator
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -83,22 +84,28 @@ def _scan_images(img_dir: Path) -> list[os.DirEntry]:
             if not entry.is_file():
                 continue
             out.append(entry)
-    out.sort(key=lambda e: e.name)
+    out.sort(key=operator.attrgetter("name"))
     return out
 
 
-@dataclass
+@dataclass(slots=True)
 class ImageEntry:
-    """Lightweight index entry — full annotation loaded on demand."""
+    """Lightweight index entry — full annotation loaded on demand.
 
-    image_path: Path
-    label_path: Path
+    Paths are plain strings: at 100k+ entries the Path objects (2 per entry)
+    dominated indexing allocations, and nearly every consumer either passes
+    them straight to PIL/os/parser (which take str) or stringified them
+    anyway. Wrap in Path() at the rare call sites that need Path APIs.
+    """
+
+    image_path: str
+    label_path: str
     split: str  # "train" or "val"
     is_corrupted: bool = False
     has_label: bool = False
 
 
-@dataclass
+@dataclass(slots=True)
 class DatasetIndex:
     root: Path
     entries: list[ImageEntry] = field(default_factory=list)
@@ -151,11 +158,24 @@ class DatasetIndex:
 
     def freeze(self) -> None:
         """Pre-compute the cached views. Call once after `entries` is fully
-        populated by the loader — avoids per-property re-walks during nav."""
-        self._train_entries = [e for e in self.entries if e.split == YOLO_TRAIN_DIR]
-        self._val_entries = [e for e in self.entries if e.split == YOLO_VAL_DIR]
-        self._annotated_count = sum(1 for e in self.entries if e.has_label)
-        self._corrupted_count = sum(1 for e in self.entries if e.is_corrupted)
+        populated by the loader — avoids per-property re-walks during nav.
+        Single pass instead of four separate walks (matters at 100k entries)."""
+        train: list[ImageEntry] = []
+        val: list[ImageEntry] = []
+        annotated = corrupted = 0
+        for e in self.entries:
+            if e.split == YOLO_TRAIN_DIR:
+                train.append(e)
+            elif e.split == YOLO_VAL_DIR:
+                val.append(e)
+            if e.has_label:
+                annotated += 1
+            if e.is_corrupted:
+                corrupted += 1
+        self._train_entries = train
+        self._val_entries = val
+        self._annotated_count = annotated
+        self._corrupted_count = corrupted
 
     def invalidate_cache(self) -> None:
         """Discard cached views — call if `entries` is mutated after freeze."""
@@ -221,31 +241,32 @@ def load_flat_dataset(root: Path) -> DatasetIndex:
     if yaml.exists():
         index.yaml_path = yaml
 
-    # Walk via os.walk: avoids Path-allocation overhead of rglob and lets us
-    # batch-check label existence with a single stat per sibling label file.
+    # Walk via os.walk: avoids Path-allocation overhead of rglob. Label
+    # existence comes from one scandir per label dir (stem set, same trick as
+    # the split loader) instead of one stat() per image.
+    stem_cache: dict[Path, set[str]] = {}
     for dirpath, _, filenames in os.walk(root):
         for fn in filenames:
             dot = fn.rfind(".")
             if dot < 0 or fn[dot:].lower() not in YOLO_IMAGE_EXTS:
                 continue
-            img_path = Path(dirpath) / fn
+            img_path = os.path.join(dirpath, fn)
             lbl_path = derive_label_path(img_path)
-            has_label = False
-            try:
-                st = lbl_path.stat()
-                has_label = st.st_size > 0
-            except OSError:
-                pass
+            lbl_dir = lbl_path.parent
+            stems = stem_cache.get(lbl_dir)
+            if stems is None:
+                stems = stem_cache[lbl_dir] = _build_label_stem_set(lbl_dir)
+            has_label = fn[:dot] in stems
             entry = ImageEntry(
                 image_path=img_path,
-                label_path=lbl_path,
+                label_path=str(lbl_path),
                 split=YOLO_TRAIN_DIR,
                 is_corrupted=False,
                 has_label=has_label,
             )
             index.entries.append(entry)
 
-    index.entries.sort(key=lambda e: str(e.image_path))
+    index.entries.sort(key=operator.attrgetter("image_path"))
     _apply_yaml_kpt_config(index)
     index.freeze()
     logger.info("Indexed %d images (flat) in %s", index.total, root)
@@ -266,15 +287,17 @@ def load_dataset(root: str | Path) -> DatasetIndex:
         lbl_dir = root / YOLO_LABELS_SUBDIR / split
         # One pass over labels gives O(1) per-image lookups below.
         label_stems = _build_label_stem_set(lbl_dir)
+        # String concat, not Path arithmetic: 2 Path objects per entry was the
+        # dominant indexing allocation at 100k images.
+        lbl_prefix = str(lbl_dir) + os.sep
         for entry in _scan_images(img_dir):
             name = entry.name
             dot = name.rfind(".")
             stem = name[:dot]
-            lbl_path = lbl_dir / (stem + YOLO_LABEL_EXT)
             index.entries.append(
                 ImageEntry(
-                    image_path=Path(entry.path),
-                    label_path=lbl_path,
+                    image_path=entry.path,
+                    label_path=lbl_prefix + stem + YOLO_LABEL_EXT,
                     split=split,
                     is_corrupted=False,
                     has_label=stem in label_stems,
@@ -289,7 +312,7 @@ def load_dataset(root: str | Path) -> DatasetIndex:
 
 def stream_dataset(
     root: str | Path,
-    chunk_size: int = 500,
+    chunk_size: int = 2000,
 ):
     """Generator that yields DatasetIndex chunks for progressive UI updates.
     Each yield is a partial index — caller accumulates entries."""
@@ -307,15 +330,15 @@ def stream_dataset(
             continue
         lbl_dir = root / YOLO_LABELS_SUBDIR / split
         label_stems = _build_label_stem_set(lbl_dir)
+        lbl_prefix = str(lbl_dir) + os.sep  # see load_dataset — avoids 2 Paths/entry
         for entry in _scan_images(img_dir):
             name = entry.name
             dot = name.rfind(".")
             stem = name[:dot]
-            lbl_path = lbl_dir / (stem + YOLO_LABEL_EXT)
             chunk.append(
                 ImageEntry(
-                    image_path=Path(entry.path),
-                    label_path=lbl_path,
+                    image_path=entry.path,
+                    label_path=lbl_prefix + stem + YOLO_LABEL_EXT,
                     split=split,
                     is_corrupted=False,
                     has_label=stem in label_stems,

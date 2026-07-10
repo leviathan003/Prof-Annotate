@@ -102,7 +102,11 @@ class YamlEditor(QFrame):
 
     def load(self, yaml_path: Path) -> None:
         self._yaml_path = yaml_path
-        text = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
+        try:
+            text = yaml_path.read_text(encoding="utf-8") if yaml_path.exists() else ""
+        except (OSError, UnicodeDecodeError):
+            # Unreadable/non-UTF-8 data.yaml must not abort the dataset open.
+            text = ""
         self._suppress_change = True
         self._editor.setPlainText(text)
         self._suppress_change = False

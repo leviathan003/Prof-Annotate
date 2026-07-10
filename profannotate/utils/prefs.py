@@ -16,14 +16,16 @@ def load_prefs() -> dict[str, Any]:
     if not PREFS_FILE.exists():
         return {}
     try:
-        return json.loads(PREFS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(PREFS_FILE.read_text(encoding="utf-8"))
+        # valid JSON that isn't a mapping (null, [], "x") would crash get/set
+        return data if isinstance(data, dict) else {}
     except (OSError, json.JSONDecodeError):
         return {}
 
 
 def save_prefs(data: dict[str, Any]) -> None:
-    APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     try:
+        APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         PREFS_FILE.write_text(json.dumps(data, indent=2), encoding="utf-8")
     except OSError:
         pass

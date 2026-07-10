@@ -6,6 +6,7 @@ Green = annotated, Yellow = unsaved/partial, Red = no annotations.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -46,10 +47,11 @@ class _FileModel(QAbstractItemModel):
             ("val", index.val_entries),
         ]
         self._unsaved: set[str] = set()
-        # path -> ImageEntry, built once. The legacy mark_saved walked the
-        # entire entries list per call (O(N) per save). With 10k images that
-        # was 10k str comparisons every time the user hit Ctrl+S.
-        self._entry_by_path: dict[str, ImageEntry] = {str(e.image_path): e for e in index.entries}
+        # path -> ImageEntry, built lazily on first save. Building it eagerly
+        # cost a full O(N) str(Path) pass per model rebuild — and the model is
+        # rebuilt every ~1000 entries during chunked indexing, which stacked
+        # into a multi-second GUI stall on 100k-image datasets.
+        self._entry_by_path: dict[str, ImageEntry] | None = None
 
     def mark_unsaved(self, image_path: str) -> None:
         self._unsaved.add(image_path)
@@ -58,6 +60,8 @@ class _FileModel(QAbstractItemModel):
     def mark_saved(self, image_path: str, has_label: bool = True) -> None:
         self._unsaved.discard(image_path)
         # O(1) lookup — keeps the row's colour accurate after save.
+        if self._entry_by_path is None:
+            self._entry_by_path = {e.image_path: e for e in self._index.entries}
         entry = self._entry_by_path.get(image_path)
         if entry is not None:
             entry.has_label = has_label
@@ -116,10 +120,9 @@ class _FileModel(QAbstractItemModel):
         entry = entries[index.row()]
 
         if role == Qt.ItemDataRole.DisplayRole:
-            return f"|-{entry.image_path.name}"
+            return f"|-{os.path.basename(entry.image_path)}"
         if role == Qt.ItemDataRole.ForegroundRole:
-            path_str = str(entry.image_path)
-            if path_str in self._unsaved:
+            if entry.image_path in self._unsaved:
                 return QBrush(QColor(COLOR_PARTIAL))
             if entry.is_corrupted:
                 return QBrush(QColor(COLOR_UNANNOTATED))
@@ -191,8 +194,13 @@ class FileExplorer(QFrame):
 
     def load_index(self, index: DatasetIndex) -> None:
         self._root_label.setText(index.root.name)
+        # Called every ~1000 entries during chunked indexing; the old model is
+        # parented to this widget and would otherwise pile up for its lifetime.
+        old = self._model
         self._model = _FileModel(index, self)
         self._tree.setModel(self._model)
+        if old is not None:
+            old.deleteLater()
         # Expand only the two group rows, never recurse into children
         for row in range(self._model.rowCount()):
             self._tree.expand(self._model.index(row, 0))

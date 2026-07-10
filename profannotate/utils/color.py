@@ -6,6 +6,8 @@ Generates distinct colors per class id deterministically.
 
 from __future__ import annotations
 
+from functools import lru_cache
+
 from PySide6.QtGui import QColor
 
 from profannotate.config.constants import (
@@ -19,6 +21,10 @@ from profannotate.config.constants import (
     SEGMENTATION_FILL_ALPHA,
     SKELETON_COLOR,
 )
+
+# NOTE: every helper below is lru_cached, so the returned QColor instances
+# are SHARED. Never mutate one in place — copy first (QColor(c)) or pass it
+# to QPen/QBrush, which copy internally. All current call sites do.
 
 # Deterministic palette — cycles for class_id > len
 _CLASS_PALETTE = [
@@ -40,6 +46,7 @@ _CLASS_PALETTE = [
 ]
 
 
+@lru_cache(maxsize=64)
 def class_color(class_id: int, alpha: int = 255) -> QColor:
     hex_color = _CLASS_PALETTE[class_id % len(_CLASS_PALETTE)]
     c = QColor(hex_color)
@@ -47,42 +54,49 @@ def class_color(class_id: int, alpha: int = 255) -> QColor:
     return c
 
 
+@lru_cache(maxsize=64)
 def bbox_color(alpha: int = 255) -> QColor:
     c = QColor(BBOX_COLOR)
     c.setAlpha(alpha)
     return c
 
 
+@lru_cache(maxsize=64)
 def keypoint_color(alpha: int = 255) -> QColor:
     c = QColor(KEYPOINT_COLOR)
     c.setAlpha(alpha)
     return c
 
 
+@lru_cache(maxsize=64)
 def skeleton_color(alpha: int = 255) -> QColor:
     c = QColor(SKELETON_COLOR)
     c.setAlpha(alpha)
     return c
 
 
+@lru_cache(maxsize=64)
 def segmentation_color(alpha: int = 255) -> QColor:
     c = QColor(SEGMENTATION_COLOR)
     c.setAlpha(alpha)
     return c
 
 
+@lru_cache(maxsize=64)
 def segmentation_fill_color() -> QColor:
     c = QColor(SEGMENTATION_COLOR)
     c.setAlpha(SEGMENTATION_FILL_ALPHA)
     return c
 
 
+@lru_cache(maxsize=64)
 def diff_old_color() -> QColor:
     c = QColor(DIFF_OLD_COLOR)
     c.setAlpha(DIFF_OLD_ALPHA)
     return c
 
 
+@lru_cache(maxsize=64)
 def diff_new_color() -> QColor:
     c = QColor(DIFF_NEW_COLOR)
     c.setAlpha(DIFF_NEW_ALPHA)

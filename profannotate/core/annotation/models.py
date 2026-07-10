@@ -18,7 +18,7 @@ class Modality(Enum):
     SEGMENTATION = auto()
 
 
-@dataclass
+@dataclass(slots=True)
 class BBox:
     cx: float
     cy: float
@@ -79,7 +79,7 @@ class BBox:
         return cls(cx, cy, w, h).clamp()
 
 
-@dataclass
+@dataclass(slots=True)
 class Keypoint:
     x: float
     y: float
@@ -102,7 +102,7 @@ class Keypoint:
         return cls(px / img_w, py / img_h, visibility).clamp()
 
 
-@dataclass
+@dataclass(slots=True)
 class SegmentationMask:
     points: list[tuple[float, float]] = field(default_factory=list)
 
@@ -124,7 +124,7 @@ class SegmentationMask:
         return [(x * img_w, y * img_h) for x, y in self.points]
 
 
-@dataclass
+@dataclass(slots=True)
 class Annotation:
     class_id: int
     bbox: Optional[BBox] = None
@@ -153,7 +153,7 @@ class Annotation:
         return out
 
 
-@dataclass
+@dataclass(slots=True)
 class ImageAnnotations:
     image_path: str
     label_path: str

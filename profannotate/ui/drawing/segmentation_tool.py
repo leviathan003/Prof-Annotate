@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Callable, Optional
 
 from PySide6.QtCore import QPointF, Qt
-from PySide6.QtGui import QPen
+from PySide6.QtGui import QColor, QPen
 from PySide6.QtWidgets import QGraphicsLineItem, QGraphicsScene
 
 from profannotate.core.annotation.models import SegmentationMask
@@ -48,18 +48,20 @@ class SegmentationTool:
     def mouse_move(self, scene_pos: QPointF) -> bool:
         if not self._active or not self._points:
             return False
-        self._remove_preview()
-        color = segmentation_color()
-        color.setAlpha(255)
-        pen = QPen(color, 1.0, Qt.PenStyle.DashLine)
-        pen.setCosmetic(True)
-        pen.setDashPattern([6, 3])
-        self._preview = self._scene.addLine(
+        # Reuse one line item + pen; recreating them (plus scene remove/add)
+        # per mouse move churns the scene graph on weak CPUs.
+        if self._preview is None:
+            color = QColor(segmentation_color())  # copy — helper result is shared
+            color.setAlpha(255)
+            pen = QPen(color, 1.0, Qt.PenStyle.DashLine)
+            pen.setCosmetic(True)
+            pen.setDashPattern([6, 3])
+            self._preview = self._scene.addLine(0, 0, 0, 0, pen)
+        self._preview.setLine(
             self._points[-1][0],
             self._points[-1][1],
             scene_pos.x(),
             scene_pos.y(),
-            pen,
         )
         return True
 

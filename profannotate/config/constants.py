@@ -6,13 +6,16 @@ All app-wide constants. No magic numbers anywhere else in the codebase.
 import sys as _sys
 from pathlib import Path
 
-if getattr(_sys, "frozen", False):
-    _PACKAGE_ROOT = Path(_sys._MEIPASS)
+# _MEIPASS is PyInstaller-only; Nuitka/AppImage builds set sys.frozen
+# without it, so an unguarded access crashes the frozen app at import.
+_MEIPASS = getattr(_sys, "_MEIPASS", None)
+if getattr(_sys, "frozen", False) and _MEIPASS:
+    _PACKAGE_ROOT = Path(_MEIPASS)
 else:
     _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 APP_NAME = "Prof Annotate"
-APP_VERSION = "1.0.10"
+APP_VERSION = "1.0.11"
 APP_DOCS_URL = "https://profannotate.readthedocs.io"
 
 ASSETS_DIR = _PACKAGE_ROOT / "assets"
@@ -108,7 +111,6 @@ DIFF_NEW_COLOR = "#00FF88"
 DIFF_OLD_ALPHA = 120
 DIFF_NEW_ALPHA = 120
 
-STATS_RELOAD_INTERVAL_MS = 750
 JSON_RELOAD_INTERVAL_MS = 250
 
 MERGED_DATASET_FORMAT = "{name1}_{name2}_merged_{datetime}"

@@ -43,7 +43,7 @@ def parse_label_file(
     )
 
     try:
-        raw_lines = label_path.read_text(encoding="utf-8").splitlines()
+        raw_lines = label_path.read_text(encoding="utf-8", errors="replace").splitlines()
     except FileNotFoundError:
         return result
     except OSError as exc:
@@ -171,7 +171,7 @@ def _parse_pose(class_id, rest, lineno, path, num_keypoints: int = NUM_KEYPOINTS
         kv = vals[4:]
         kpts = [Keypoint(kv[i], kv[i + 1], int(kv[i + 2])) for i in range(0, len(kv), 3)]
         return Annotation(class_id=class_id, bbox=bbox, keypoints=kpts)
-    except (ValueError, IndexError) as e:
+    except (ValueError, IndexError, OverflowError) as e:
         logger.warning("%s:%d pose error: %s", path, lineno, e)
         return None
 
@@ -196,6 +196,6 @@ def _parse_combined(class_id, rest, lineno, path, num_keypoints: int = NUM_KEYPO
         sv = vals[pe:]
         mask = SegmentationMask(points=[(sv[i], sv[i + 1]) for i in range(0, len(sv), 2)])
         return Annotation(class_id=class_id, bbox=bbox, keypoints=kpts, mask=mask)
-    except (ValueError, IndexError) as e:
+    except (ValueError, IndexError, OverflowError) as e:
         logger.warning("%s:%d combined error: %s", path, lineno, e)
         return None

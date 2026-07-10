@@ -35,7 +35,10 @@ def load_yaml(root: str | Path) -> dict[str, Any]:
         return {}
     try:
         with path.open("r", encoding="utf-8") as fh:
-            return yaml.safe_load(fh) or {}
+            data = yaml.safe_load(fh)
+        # A top-level list/scalar is valid YAML but not a data.yaml mapping —
+        # callers immediately .get() on the result.
+        return data if isinstance(data, dict) else {}
     except Exception as exc:
         logger.error("Failed to load data.yaml: %s", exc)
         return {}
@@ -141,7 +144,7 @@ def _detect_num_keypoints(root: Path) -> int | None:
     candidates: set[int] = set()
     for lbl in lbl_dir.rglob(f"*{YOLO_LABEL_EXT}"):
         try:
-            with lbl.open("r") as fh:
+            with lbl.open("r", encoding="utf-8", errors="ignore") as fh:
                 for line in fh:
                     parts = line.strip().split()
                     n = len(parts) - 1  # drop class_id
@@ -168,7 +171,7 @@ def _detect_classes(root: Path) -> list[str]:
 
     for lbl in lbl_dir.rglob(f"*{YOLO_LABEL_EXT}"):
         try:
-            with lbl.open("r") as fh:
+            with lbl.open("r", encoding="utf-8", errors="ignore") as fh:
                 for line in fh:
                     parts = line.strip().split()
                     if parts:

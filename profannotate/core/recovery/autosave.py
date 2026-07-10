@@ -34,7 +34,6 @@ def _path(root: str | Path) -> Path:
 
 
 def save_session(root: str | Path, dirty: dict[str, ImageAnnotations]) -> bool:
-    SESSION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "version": _VERSION,
         "dataset_root": str(Path(root).resolve()),
@@ -42,6 +41,9 @@ def save_session(root: str | Path, dirty: dict[str, ImageAnnotations]) -> bool:
         "annotations": {k: _ser_img(v) for k, v in dirty.items()},
     }
     try:
+        # mkdir inside the try: an unwritable home must return False, not
+        # raise out of closeEvent during shutdown.
+        SESSION_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         target = _path(root)
         tmp = target.with_suffix(".tmp")
         # Compact JSON — the file is machine-only, no indent needed. Saves

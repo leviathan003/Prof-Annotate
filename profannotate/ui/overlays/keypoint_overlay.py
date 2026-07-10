@@ -79,21 +79,26 @@ class KeypointOverlay(QGraphicsItem):
         n_kp = len(kpts)
         selected = self._selected_kpt
 
-        # Skeleton lines — reuse a single QPen, only mutate its colour. This
-        # avoids allocating a new QColor + QPen per drawn segment.
-        sk_pen = QPen(QColor(base_sk), 1.2)
-        sk_pen.setCosmetic(True)
+        # Skeleton lines — only two alpha variants exist, so precompute both
+        # pens once instead of a QColor per segment (~65 allocs/paint at 133
+        # kpts). Cosmetic pens; the painter just switches between them.
+        sk_full = QColor(base_sk)
+        sk_full.setAlpha(220)
+        sk_dim = QColor(base_sk)
+        sk_dim.setAlpha(130)
+        pen_full = QPen(sk_full, 1.2)
+        pen_full.setCosmetic(True)
+        pen_dim = QPen(sk_dim, 1.2)
+        pen_dim.setCosmetic(True)
         for a, b in self._connections:
             if a >= n_kp or b >= n_kp:
                 continue
             ka, kb = kpts[a], kpts[b]
             if not (_kpt_visible(ka) and _kpt_visible(kb)):
                 continue
-            alpha = 220 if (ka.visibility == 2 and kb.visibility == 2) else 130
-            c = QColor(base_sk)
-            c.setAlpha(alpha)
-            sk_pen.setColor(c)
-            painter.setPen(sk_pen)
+            painter.setPen(
+                pen_full if (ka.visibility == 2 and kb.visibility == 2) else pen_dim
+            )
             painter.drawLine(
                 QPointF(ka.x * iw, ka.y * ih),
                 QPointF(kb.x * iw, kb.y * ih),
@@ -106,20 +111,24 @@ class KeypointOverlay(QGraphicsItem):
         label_pen.setCosmetic(True)
         label_font: QFont | None = None  # built lazily only if a dot is selected
 
+        # Two brush variants (visible / uncertain) instead of a QColor+QBrush
+        # per keypoint.
+        kp_dim = QColor(base_kp)
+        kp_dim.setAlpha(180)
+        brush_full = QBrush(base_kp)
+        brush_dim = QBrush(kp_dim)
+
         for i, kp in enumerate(kpts):
             if not _kpt_visible(kp):
                 continue
             px, py = kp.x * iw, kp.y * ih
             screen = transform.map(QPointF(px, py))
             r = _SELECTED_RADIUS if i == selected else _KPT_RADIUS
-            c = QColor(base_kp)
-            if kp.visibility == 1:
-                c.setAlpha(180)
 
             painter.save()
             painter.resetTransform()
             painter.setPen(outline_pen)
-            painter.setBrush(QBrush(c))
+            painter.setBrush(brush_dim if kp.visibility == 1 else brush_full)
             painter.drawEllipse(screen, r, r)
 
             if i == selected:

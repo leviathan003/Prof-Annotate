@@ -330,26 +330,41 @@ class _DatasetWorker(QObject):
         from profannotate.core.inference.engine import InferenceEngine
         from profannotate.core.inference.filter import filter_by_modality
         from profannotate.core.inference.postprocess import postprocess
-        from profannotate.utils.image import image_dimensions, load_image_rgb
+        from profannotate.utils.image import load_image_rgb
 
         # Guarantee the labels tree + an empty .txt per image up front.
         materialize_empty_labels(dest)
 
         engine = InferenceEngine()
         engine.load()
+        try:
+            self._annotate_loop(engine, dest)
+        finally:
+            # A mid-batch failure must not leave the ONNX session resident.
+            engine.unload()
+
+    def _annotate_loop(self, engine, dest: Path) -> None:
+        from profannotate.core.annotation.models import ImageAnnotations, Modality
+        from profannotate.core.annotation.writer import label_path_for_image, write_label_file
+        from profannotate.core.inference.filter import filter_by_modality
+        from profannotate.core.inference.postprocess import postprocess
+        from profannotate.utils.image import load_image_rgb
+
+        from profannotate.config.constants import YOLO_IMAGE_EXTS
+
         for img_path in dest.rglob("*"):
             if img_path.suffix.lower() not in YOLO_IMAGE_EXTS:
                 continue
             lbl_path = label_path_for_image(dest, img_path)
             if lbl_path.exists() and lbl_path.stat().st_size > 0:
                 continue
-            rgb = load_image_rgb(img_path)
+            # max_side=1280: model input is 640 — draft decode costs zero
+            # accuracy. Dims MUST come from the decoded array so postprocess
+            # letterbox math matches what _preprocess actually resized.
+            rgb = load_image_rgb(img_path, max_side=1280)
             if rgb is None:
                 continue
-            dims = image_dimensions(img_path)
-            if dims is None:
-                continue
-            w, h = dims
+            h, w = rgb.shape[:2]
             raw = engine.run(rgb)
             anns = postprocess(raw, w, h)
             filtered = filter_by_modality(anns, self._modalities)
@@ -364,7 +379,6 @@ class _DatasetWorker(QObject):
                 instances=filtered,
             )
             write_label_file(img_ann)
-        engine.unload()
 
 
 # ── Base page ─────────────────────────────────────────────────────────────────
@@ -910,7 +924,31 @@ class DatasetWizard(QDialog):
         else:
             self._exec_page.update_log(self._log_labels[message], state)
 
+    def _busy(self) -> bool:
+        thread = self._thread
+        try:
+            return thread is not None and thread.isRunning()
+        except RuntimeError:  # C++ object already deleted via deleteLater
+            return False
+
+    def reject(self) -> None:  # noqa: D401
+        # Esc during the build would look like a cancel but leave the worker
+        # copying files and running inference — and destroying the dialog with
+        # a live QThread hard-aborts the process mid-write.
+        if self._busy() and not getattr(self, "_exec_done", False):
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:  # noqa: D401
+        if self._busy() and not getattr(self, "_exec_done", False):
+            event.ignore()
+            return
+        super().closeEvent(event)
+
     def _on_finished(self, success: bool, result: str) -> None:
+        # The thread's quit is queued behind this slot — let accept/reject
+        # through even though isRunning() is still momentarily true.
+        self._exec_done = True
         if success:
             self.dataset_ready.emit(result)
             self.accept()

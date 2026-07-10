@@ -11,8 +11,10 @@ def _setup_paths() -> None:
     import sys
     from pathlib import Path
 
-    if getattr(sys, "frozen", False):
-        root = Path(sys._MEIPASS)
+    # _MEIPASS is PyInstaller-only; Nuitka builds set sys.frozen without it.
+    meipass = getattr(sys, "_MEIPASS", None)
+    if getattr(sys, "frozen", False) and meipass:
+        root = Path(meipass)
     else:
         root = Path(__file__).resolve().parent
 

@@ -118,13 +118,24 @@ def reshuffle_into_yolo_format(
         img_out.mkdir(parents=True, exist_ok=True)
         lbl_out.mkdir(parents=True, exist_ok=True)
 
+        seen: set[str] = set()
         for img in split_images:
-            shutil.copy2(img, img_out / img.name)
+            # rglob can yield the same basename from different subdirs;
+            # uniquify so the second copy doesn't silently clobber the first
+            # (and end up paired with the other image's label).
+            name = img.name
+            if name in seen:
+                i = 1
+                while f"{img.stem}_{i}{img.suffix}" in seen:
+                    i += 1
+                name = f"{img.stem}_{i}{img.suffix}"
+            seen.add(name)
+            shutil.copy2(img, img_out / name)
             lbl = _find_label_sibling(img, source)
             if lbl is None or not lbl.exists():
                 lbl = img.with_suffix(YOLO_LABEL_EXT)
             if lbl and lbl.exists():
-                shutil.copy2(lbl, lbl_out / lbl.name)
+                shutil.copy2(lbl, lbl_out / (Path(name).stem + YOLO_LABEL_EXT))
 
     logger.info("Reshuffled %d images → %s", len(images), dest)
     return dest

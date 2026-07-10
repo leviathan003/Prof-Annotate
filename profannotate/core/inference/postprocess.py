@@ -33,13 +33,17 @@ def postprocess(
     raw = engine_output["raw"]
     input_shape = engine_output["input_shape"]
     input_h, input_w = input_shape[2], input_shape[3]
+    # Head layout from model metadata (engine.run supplies these); the module
+    # constants are only the bundled-model fallback.
+    nc = engine_output.get("nc", _NC)
+    nm = engine_output.get("nm", _NM)
 
     scale = min(input_w / orig_w, input_h / orig_h)
     pad_x = (input_w - orig_w * scale) / 2
     pad_y = (input_h - orig_h * scale) / 2
 
     combined_raw = next((o for o in raw if o.ndim == 3), None)
-    proto_raw = next((o for o in raw if o.ndim == 4 and o.shape[1] == _NM), None)
+    proto_raw = next((o for o in raw if o.ndim == 4 and o.shape[1] == nm), None)
     if combined_raw is None:
         logger.warning("postprocess: no rank-3 combined output found")
         return []
@@ -48,18 +52,22 @@ def postprocess(
     if predictions.shape[0] < predictions.shape[1]:
         predictions = predictions.T
 
-    scores = predictions[:, 4]
+    # Columns 4..4+nc are per-class scores; max over them so nc>1 models
+    # keep detections of every class (identical to before when nc == 1).
+    scores = predictions[:, 4 : 4 + nc].max(axis=1)
     mask = scores >= conf_threshold
     predictions = predictions[mask]
     if len(predictions) == 0:
         return []
 
+    scores = scores[mask]
+
     boxes_xyxy = _cxcywh_to_xyxy(predictions[:, :4])
-    keep = _nms(boxes_xyxy, predictions[:, 4], iou_threshold)
+    keep = _nms(boxes_xyxy, scores, iou_threshold)
     predictions = predictions[keep]
     boxes_xyxy = boxes_xyxy[keep]
 
-    kpt_offset = 4 + _NC + _NM  # 37
+    kpt_offset = 4 + nc + nm
     # Derive the keypoint count from the model output width so the same code
     # handles any schema (19, 133, …): width = 4 + nc + nm + 3*K.
     num_keypoints = max(0, (predictions.shape[1] - kpt_offset) // 3)
@@ -107,6 +115,7 @@ def postprocess(
             det_idx,
             boxes_xyxy,
             proto_raw,
+            nc,
             input_w,
             input_h,
             pad_x,
@@ -115,19 +124,22 @@ def postprocess(
             orig_h,
         )
 
-        annotations.append(Annotation(class_id=0, bbox=bbox, keypoints=keypoints, mask=mask_out))
+        class_id = int(np.argmax(pred[4 : 4 + nc])) if nc > 1 else 0
+        annotations.append(
+            Annotation(class_id=class_id, bbox=bbox, keypoints=keypoints, mask=mask_out)
+        )
 
     return annotations
 
 
 def _decode_mask(
-    pred, det_idx, boxes_xyxy, proto_raw, input_w, input_h, pad_x, pad_y, orig_w, orig_h
+    pred, det_idx, boxes_xyxy, proto_raw, nc, input_w, input_h, pad_x, pad_y, orig_w, orig_h
 ):
     if proto_raw is None:
         return None
     proto = proto_raw[0]  # (NM, mH, mW)
     nm, mH, mW = proto.shape
-    coeffs = pred[4 + _NC : 4 + _NC + nm].astype(np.float32)
+    coeffs = pred[4 + nc : 4 + nc + nm].astype(np.float32)
 
     mask_flat = coeffs @ proto.reshape(nm, -1)
     mask_map = (1.0 / (1.0 + np.exp(-mask_flat))).reshape(mH, mW).astype(np.float32)

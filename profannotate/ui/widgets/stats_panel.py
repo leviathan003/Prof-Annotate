@@ -1,11 +1,17 @@
 """
 profannotate/ui/widgets/stats_panel.py
-Hot-reloading dataset statistics panel.
-Runs stat computation on a background thread, updates UI on result.
+Event-driven dataset statistics panel.
+
+The cheap counters (total/train/val/annotated/corrupted) come straight from the
+frozen DatasetIndex caches and render immediately on every `set_index` call
+(which main_window fires on dataset load and on every save). Only the class
+distribution needs a label-file walk — that runs on a background thread behind
+a debounce, never on a wall-clock poll.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional
 
 from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
@@ -18,64 +24,40 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from profannotate.config.constants import STATS_RELOAD_INTERVAL_MS
 from profannotate.core.dataset.loader import DatasetIndex
 
 
-class _StatsWorker(QObject):
+class _ClassScanWorker(QObject):
+    """Walks the labels tree once to build the class distribution."""
+
     result_ready = Signal(dict)
 
-    def __init__(self, index: DatasetIndex) -> None:
+    def __init__(self, root: Path) -> None:
         super().__init__()
-        self._index = index
+        self._root = root
 
     def compute(self) -> None:
-        idx = self._index
-        total = idx.total
-        train = len(idx.train_entries)
-        val = len(idx.val_entries)
-        ann = idx.annotated_count
-        corr = idx.corrupted_count
-        unann = total - ann
-
-        train_pct = round(train / total * 100) if total else 0
-        val_pct = round(val / total * 100) if total else 0
-        ann_pct = round(ann / total * 100) if total else 0
-
-        # Class distribution from label files
         from collections import Counter
 
-        class_counts: Counter = Counter()
         from profannotate.config.constants import YOLO_LABEL_EXT, YOLO_LABELS_SUBDIR
 
-        lbl_dir = idx.root / YOLO_LABELS_SUBDIR
+        counts: Counter = Counter()
+        lbl_dir = self._root / YOLO_LABELS_SUBDIR
         if lbl_dir.exists():
             for lbl in lbl_dir.rglob(f"*{YOLO_LABEL_EXT}"):
                 try:
-                    for line in lbl.read_text().splitlines():
-                        parts = line.strip().split()
+                    for line in lbl.read_text(errors="ignore").splitlines():
+                        # Only the first field (class id) matters — don't split
+                        # the whole 400-field pose line.
+                        parts = line.split(None, 1)
                         if parts:
                             try:
-                                class_counts[int(parts[0])] += 1
+                                counts[int(parts[0])] += 1
                             except ValueError:
                                 pass
                 except OSError:
                     pass
-
-        self.result_ready.emit(
-            {
-                "total": total,
-                "train": train,
-                "val": val,
-                "train_pct": train_pct,
-                "val_pct": val_pct,
-                "annotated": ann,
-                "annotated_pct": ann_pct,
-                "unannotated": unann,
-                "corrupted": corr,
-                "class_counts": dict(class_counts),
-            }
-        )
+        self.result_ready.emit(dict(counts))
 
 
 class StatsPanel(QFrame):
@@ -83,10 +65,14 @@ class StatsPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("stats_panel")
         self._index: Optional[DatasetIndex] = None
-        self._timer = QTimer(self)
-        self._timer.setTimerType(Qt.TimerType.CoarseTimer)
-        self._timer.setInterval(STATS_RELOAD_INTERVAL_MS)
-        self._timer.timeout.connect(self._schedule_update)
+        self._class_counts: dict = {}
+        self._scanned_root: Optional[Path] = None
+        # Single-shot debounce: bursts of saves collapse into one label scan.
+        self._rescan_timer = QTimer(self)
+        self._rescan_timer.setSingleShot(True)
+        self._rescan_timer.setTimerType(Qt.TimerType.CoarseTimer)
+        self._rescan_timer.setInterval(5000)
+        self._rescan_timer.timeout.connect(self._start_class_scan)
         self._thread: Optional[QThread] = None
 
         root_layout = QVBoxLayout(self)
@@ -113,40 +99,83 @@ class StatsPanel(QFrame):
 
         self._rows: dict[str, QLabel] = {}
 
-    def set_index(self, index: DatasetIndex) -> None:
+    def set_index(self, index: Optional[DatasetIndex]) -> None:
         self._index = index
-        self._schedule_update()
-        self._timer.start()
+        if index is None:
+            return
+        if index.root != self._scanned_root:
+            # New dataset: stale class counts must not bleed across.
+            self._scanned_root = index.root
+            self._class_counts = {}
+            self._render(index)
+            self._start_class_scan()
+        else:
+            # ponytail: full label rescan per save-burst; switch to per-file
+            # delta updates only if this ever shows up on a profile.
+            self._render(index)
+            self._rescan_timer.start()
 
     def clear(self) -> None:
-        self._timer.stop()
+        self._rescan_timer.stop()
         self._index = None
         self._clear_rows()
 
-    # ── Visibility — only poll while the panel is on-screen ────────────────
+    def shutdown(self) -> None:
+        """Stop pending rescans and wait out an in-flight scan thread — a
+        QThread wrapper GC'd while its thread runs hard-aborts the process."""
+        self._rescan_timer.stop()
+        thread = self._thread
+        if thread is None:
+            return
+        try:
+            thread.quit()
+            thread.wait(3000)
+        except RuntimeError:
+            pass  # already deleted via deleteLater
 
-    def hideEvent(self, event) -> None:  # noqa: D401
-        super().hideEvent(event)
-        self._timer.stop()
+    def _render(self, idx: DatasetIndex) -> None:
+        """Rebuild the rows from the frozen index caches (all O(1)) plus the
+        last known class distribution."""
+        total = idx.total
+        train = len(idx.train_entries)
+        val = len(idx.val_entries)
+        ann = idx.annotated_count
+        self._apply_stats(
+            {
+                "total": total,
+                "train": train,
+                "val": val,
+                "train_pct": round(train / total * 100) if total else 0,
+                "val_pct": round(val / total * 100) if total else 0,
+                "annotated": ann,
+                "annotated_pct": round(ann / total * 100) if total else 0,
+                "unannotated": total - ann,
+                "corrupted": idx.corrupted_count,
+                "class_counts": self._class_counts,
+            }
+        )
 
-    def showEvent(self, event) -> None:  # noqa: D401
-        super().showEvent(event)
-        # Restart only if we actually have a dataset to summarise.
-        if self._index is not None and not self._timer.isActive():
-            self._timer.start()
-
-    def _schedule_update(self) -> None:
-        if self._index is None or self._thread is not None:
+    def _start_class_scan(self) -> None:
+        if self._index is None:
+            return
+        if self._thread is not None:
+            # A scan is already running — re-arm so this request isn't lost.
+            self._rescan_timer.start()
             return
         self._thread = QThread()
-        self._worker = _StatsWorker(self._index)
+        self._worker = _ClassScanWorker(self._index.root)
         self._worker.moveToThread(self._thread)
         self._thread.started.connect(self._worker.compute)
-        self._worker.result_ready.connect(self._apply_stats)
+        self._worker.result_ready.connect(self._on_class_counts)
         self._worker.result_ready.connect(self._thread.quit)
         self._thread.finished.connect(self._thread.deleteLater)
         self._thread.finished.connect(lambda: setattr(self, "_thread", None))
         self._thread.start()
+
+    def _on_class_counts(self, counts: dict) -> None:
+        self._class_counts = counts
+        if self._index is not None:
+            self._render(self._index)
 
     def _apply_stats(self, data: dict) -> None:
         self._clear_rows()

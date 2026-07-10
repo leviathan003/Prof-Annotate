@@ -5,6 +5,11 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(dirname "$SCRIPT_DIR")"
 DIST="$ROOT/dist_nuitka"
 
+# Target arch = the arch this script runs on (inside the manylinux container,
+# that IS the target: x86_64 or aarch64). Drives the patchelf/appimagetool
+# downloads, the ARCH env for appimagetool, and the output filename.
+ARCH="$(uname -m)"
+
 # ── Logging (tee'd to build/logs) + error context ─────────────────────────────
 # shellcheck source=build/_log.sh
 source "$SCRIPT_DIR/_log.sh"
@@ -53,7 +58,12 @@ fi
 case "$VARIANT" in cpu|gpu-cuda12|gpu-cuda11) ;; *) echo "ERROR: bad variant '$VARIANT'"; exit 1 ;; esac
 [ "$VARIANT" = cpu ] && IS_GPU=false || IS_GPU=true
 
-APPIMAGE_OUT="$ROOT/ProfAnnotate-${VARIANT}-x86_64.AppImage"
+if [ "$IS_GPU" = true ] && [ "$ARCH" != x86_64 ]; then
+    echo "ERROR: GPU variants need onnxruntime-gpu, which has no $ARCH wheels — build --cpu on $ARCH"
+    exit 1
+fi
+
+APPIMAGE_OUT="$ROOT/ProfAnnotate-${VARIANT}-${ARCH}.AppImage"
 APPDIR="$DIST/ProfAnnotate-${VARIANT}.AppDir"
 
 # ── Python from active env (conda or venv) ────────────────────────────────────
@@ -140,9 +150,12 @@ PATCHELF_VERSION=$(patchelf --version 2>/dev/null | awk '{print $2}' || echo "no
 if [ "$PATCHELF_VERSION" = "0.18.0" ] || [ "$PATCHELF_VERSION" = "none" ]; then
     echo "patchelf $PATCHELF_VERSION is unusable — downloading 0.17.2"
     PATCHELF_LOCAL="$ROOT/build/patchelf-0.17.2"
+    # The vendored fallback binary is x86_64-only; other arches get an
+    # arch-suffixed path so the download below runs instead.
+    [ "$ARCH" != x86_64 ] && PATCHELF_LOCAL="$PATCHELF_LOCAL-$ARCH"
     if [ ! -f "$PATCHELF_LOCAL" ]; then
         wget -q \
-            "https://github.com/NixOS/patchelf/releases/download/0.17.2/patchelf-0.17.2-x86_64.tar.gz" \
+            "https://github.com/NixOS/patchelf/releases/download/0.17.2/patchelf-0.17.2-${ARCH}.tar.gz" \
             -O /tmp/patchelf.tar.gz
             TMP_EXTRACT="$(mktemp -d)"
             tar --no-same-owner --no-same-permissions -xzf /tmp/patchelf.tar.gz -C "$TMP_EXTRACT"
@@ -366,10 +379,10 @@ print("Icon saved")
 PYEOF
 
 echo "==> [4/5] Fetching appimagetool"
-APPIMAGETOOL="$DIST/appimagetool-x86_64.AppImage"
+APPIMAGETOOL="$DIST/appimagetool-${ARCH}.AppImage"
 if [ ! -f "$APPIMAGETOOL" ]; then
     wget -q \
-        "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage" \
+        "https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-${ARCH}.AppImage" \
         -O "$APPIMAGETOOL"
     chmod +x "$APPIMAGETOOL"
 fi
@@ -387,7 +400,7 @@ else
 fi
 
 echo "==> [5/5] Building AppImage -> $APPIMAGE_OUT"
-ARCH=x86_64 "$APPIMAGETOOL_BIN" "$APPDIR" "$APPIMAGE_OUT"
+ARCH="$ARCH" "$APPIMAGETOOL_BIN" "$APPDIR" "$APPIMAGE_OUT"
 chmod +x "$APPIMAGE_OUT"
 
 echo ""

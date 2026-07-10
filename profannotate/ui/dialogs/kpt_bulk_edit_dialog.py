@@ -23,6 +23,16 @@ from PySide6.QtWidgets import (
 )
 
 
+def _looks_like_kpt_block(parts: list[str], n_kpts: int) -> bool:
+    """True if every visibility slot of a candidate kpt block holds a 0/1/2
+    flag — seg coordinates there are fractional, so this separates real pose
+    lines from bbox+seg lines that merely match the field count."""
+    for i in range(n_kpts):
+        if parts[5 + i * 3 + 2] not in ("0", "1", "2"):
+            return False
+    return True
+
+
 class _BulkKptWorker(QObject):
     log = Signal(str)
     finished = Signal(dict)
@@ -89,6 +99,12 @@ class _BulkKptWorker(QObject):
             # Identify pose or combined lines using CURRENT keypoint count
             is_pose = n == 1 + 4 + pose_fields
             is_combined = n > 1 + 4 + pose_fields and (n - 1 - 4 - pose_fields) % 2 == 0
+            # A bbox+seg line can have the same field count as a pose line
+            # (even kpt count, matching mask size) — require every candidate
+            # visibility field to be a 0/1/2 flag before stripping anything,
+            # or the mask coordinates get mangled as fake keypoints.
+            if (is_pose or is_combined) and not _looks_like_kpt_block(parts, n_kpts):
+                is_pose = is_combined = False
             if is_pose or is_combined:
                 new = list(parts[:5])  # class_id + bbox (4)
                 for i in range(n_kpts):
@@ -199,6 +215,28 @@ class KptBulkEditDialog(QDialog):
     def showEvent(self, event) -> None:  # noqa: D401
         super().showEvent(event)
         self._run_btn.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    def _busy(self) -> bool:
+        thread = getattr(self, "_thread", None)
+        try:
+            return thread is not None and thread.isRunning()
+        except RuntimeError:  # C++ object already deleted via deleteLater
+            return False
+
+    def reject(self) -> None:  # noqa: D401
+        # Dismissing while the worker rewrites label files would look like a
+        # cancel but keep mutating the dataset — and destroying the dialog
+        # with a live QThread hard-aborts the process.
+        if self._busy():
+            self._status.setText("Working — please wait until the rewrite finishes, Annotator.")
+            return
+        super().reject()
+
+    def closeEvent(self, event) -> None:  # noqa: D401
+        if self._busy():
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def keyPressEvent(self, event) -> None:  # noqa: D401
         if event.key() == Qt.Key.Key_Escape:

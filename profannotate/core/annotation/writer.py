@@ -18,7 +18,7 @@ from profannotate.config.constants import (
     YOLO_TRAIN_DIR,
     YOLO_VAL_DIR,
 )
-from profannotate.core.annotation.models import Annotation, ImageAnnotations
+from profannotate.core.annotation.models import Annotation, BBox, ImageAnnotations
 from profannotate.utils.image import derive_label_path
 
 logger = logging.getLogger(__name__)
@@ -169,11 +169,17 @@ def write_label_file(annotations: ImageAnnotations) -> bool:
 def _serialize(ann: Annotation) -> str:
     parts: list[str] = [str(ann.class_id)]
 
-    if ann.has_bbox():
-        b = ann.bbox
-        parts += [_f(b.cx), _f(b.cy), _f(b.w), _f(b.h)]
+    bbox = ann.bbox
+    if bbox is None and ann.has_keypoints():
+        # YOLO pose format cannot represent keypoints without a bbox —
+        # synthesize a tight one so the keypoints survive the round-trip
+        # instead of being silently dropped on the next parse.
+        bbox = BBox.from_keypoints(ann.keypoints)
 
-    if ann.has_keypoints() and ann.has_bbox():
+    if bbox is not None:
+        parts += [_f(bbox.cx), _f(bbox.cy), _f(bbox.w), _f(bbox.h)]
+
+    if ann.has_keypoints() and bbox is not None:
         for kp in ann.keypoints:
             if kp is None:
                 parts += ["0", "0", "0"]

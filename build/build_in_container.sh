@@ -12,6 +12,8 @@
 #   bash build/build_in_container.sh --gpu-cuda12
 #   bash build/build_in_container.sh --gpu-cuda11
 #   bash build/build_in_container.sh --image <docker-image>
+#   bash build/build_in_container.sh --arch aarch64 --cpu
+#     (cross-arch needs binfmt once: docker run --privileged --rm tonistiigi/binfmt --install arm64)
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,6 +31,7 @@ while [ $# -gt 0 ]; do
         --gpu-cuda11)       VARIANTS+=(gpu-cuda11) ;;
         --all)              VARIANTS=(cpu gpu-cuda12 gpu-cuda11) ;;
         --image)            shift; IMAGE="${1:-}"; [ -n "$IMAGE" ] || die "--image needs an argument" ;;
+        --arch)             shift; [ -n "${1:-}" ] || die "--arch needs an argument (x86_64|aarch64)"; IMAGE="quay.io/pypa/manylinux_2_28_$1" ;;
         -h|--help)
             grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) die "unknown argument: $1 (try --help)" ;;
@@ -104,4 +107,4 @@ EOF
 fi
 
 step "Done"
-ls -lh "$ROOT"/ProfAnnotate-*-x86_64.AppImage 2>/dev/null || warn "no AppImage artifacts found"
+ls -lh "$ROOT"/ProfAnnotate-*.AppImage 2>/dev/null || warn "no AppImage artifacts found"

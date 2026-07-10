@@ -33,8 +33,9 @@ class SegmentationOverlay(QGraphicsItem):
         self._is_drawing = is_drawing
         self._selected_pt: int | None = None
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
+        self._bounds = self._compute_bounds()
 
-    def boundingRect(self) -> QRectF:
+    def _compute_bounds(self) -> QRectF:
         if not self._mask.points:
             return QRectF(0, 0, self._img_w, self._img_h)
         xs = [x * self._img_w for x, _ in self._mask.points]
@@ -43,6 +44,11 @@ class SegmentationOverlay(QGraphicsItem):
         return QRectF(
             min(xs) - m, min(ys) - m, max(xs) - min(xs) + m * 2, max(ys) - min(ys) + m * 2
         )
+
+    def boundingRect(self) -> QRectF:
+        # Qt calls this constantly (scene indexing, repaints) — must be O(1);
+        # recomputed only in update_mask under prepareGeometryChange.
+        return self._bounds
 
     def paint(self, painter, option, widget=None):
         if not self._mask.points:
@@ -68,31 +74,36 @@ class SegmentationOverlay(QGraphicsItem):
             for i in range(len(pts_px) - 1):
                 painter.drawLine(QPointF(*pts_px[i]), QPointF(*pts_px[i + 1]))
 
+        # Hoisted out of the loop: identical for every vertex, and a 50+ point
+        # mask would otherwise allocate 50+ QColor/QPen/QBrush per paint.
+        pt_color = QColor(color)
+        pt_color.setAlpha(230)
+        pt_brush = QBrush(pt_color)
+        wp = QPen(Qt.GlobalColor.white, 1.2)
+        wp.setCosmetic(True)
+        bp = QPen(QColor(0, 0, 0, 160), 0.8)
+        bp.setCosmetic(True)
+
         transform = painter.worldTransform()
         for i, (px, py) in enumerate(pts_px):
             screen = transform.map(QPointF(px, py))
             r = _SELECTED_RADIUS if i == self._selected_pt else _POINT_RADIUS
-            pt_color = QColor(color)
-            pt_color.setAlpha(230)
             painter.save()
             painter.resetTransform()
             if i == 0 and self._is_drawing:
-                wp = QPen(Qt.GlobalColor.white, 1.2)
-                wp.setCosmetic(True)
                 painter.setPen(wp)
-                painter.setBrush(QBrush(pt_color))
+                painter.setBrush(pt_brush)
                 painter.drawEllipse(screen, r + 1.5, r + 1.5)
             else:
-                bp = QPen(QColor(0, 0, 0, 160), 0.8)
-                bp.setCosmetic(True)
                 painter.setPen(bp)
-                painter.setBrush(QBrush(pt_color))
+                painter.setBrush(pt_brush)
                 painter.drawEllipse(screen, r, r)
             painter.restore()
 
     def update_mask(self, mask: SegmentationMask) -> None:
         self.prepareGeometryChange()
         self._mask = mask
+        self._bounds = self._compute_bounds()
         self.update()
 
     def select_point(self, idx: int | None) -> None:

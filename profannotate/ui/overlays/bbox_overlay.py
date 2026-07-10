@@ -41,6 +41,41 @@ __all__ = [
 _HANDLE_R = 4.5
 _HIT_R = 8.0
 
+_H_IDS = (
+    HANDLE_TL,
+    HANDLE_TC,
+    HANDLE_TR,
+    HANDLE_ML,
+    HANDLE_MR,
+    HANDLE_BL,
+    HANDLE_BC,
+    HANDLE_BR,
+)
+
+# Immutable paint objects shared by every BBoxOverlay — built lazily on first
+# paint (after QApplication exists) instead of per paint call.
+_SHARED: dict = {}
+
+
+def _shared():
+    if not _SHARED:
+        font = QFont()
+        font.setPointSizeF(8.5)
+        handle_pen = QPen(QColor("#000000"), 0.8)
+        handle_pen.setCosmetic(True)
+        violated = QColor("#FF4444")
+        violated_fill = QColor("#FF4444")
+        violated_fill.setAlpha(30)
+        _SHARED.update(
+            font=font,
+            handle_pen=handle_pen,
+            handle_brush=QBrush(QColor("#FFFFFF")),
+            violated=violated,
+            violated_fill_brush=QBrush(violated_fill),
+            no_brush=QBrush(Qt.BrushStyle.NoBrush),
+        )
+    return _SHARED
+
 
 class BBoxOverlay(QGraphicsItem):
     def __init__(
@@ -61,12 +96,12 @@ class BBoxOverlay(QGraphicsItem):
     def _update_rect(self) -> None:
         x1, y1, x2, y2 = self._bbox.to_xyxy(self._img_w, self._img_h)
         self._rect = QRectF(x1, y1, x2 - x1, y2 - y1)
-
-    def _handle_positions(self) -> list[tuple[float, float]]:
+        # Handle positions only change with geometry — compute once here, not
+        # in every paint AND every hit test.
         r = self._rect
         cx = r.x() + r.width() / 2
         cy = r.y() + r.height() / 2
-        return [
+        self._handles: list[tuple[float, float]] = [
             (r.x(), r.y()),
             (cx, r.y()),
             (r.x() + r.width(), r.y()),
@@ -83,18 +118,16 @@ class BBoxOverlay(QGraphicsItem):
 
     def paint(self, painter: QPainter, option: QStyleOptionGraphicsItem, widget=None) -> None:
         transform = painter.worldTransform()
+        shared = _shared()
 
         if self._violated:
-            color = QColor("#FF4444")
+            color = shared["violated"]
             pw = 2.5
-            # Flashing fill to draw attention
-            fill = QColor("#FF4444")
-            fill.setAlpha(30)
-            painter.setBrush(QBrush(fill))
+            painter.setBrush(shared["violated_fill_brush"])
         else:
             color = class_color(self._class_id)
             pw = 2.0 if self._selected else 1.5
-            painter.setBrush(QBrush(Qt.BrushStyle.NoBrush))
+            painter.setBrush(shared["no_brush"])
 
         pen = QPen(color, pw)
         if self._violated:
@@ -107,11 +140,8 @@ class BBoxOverlay(QGraphicsItem):
         tl_screen = transform.map(QPointF(self._rect.x(), self._rect.y()))
         painter.save()
         painter.resetTransform()
-        font = QFont()
-        font.setPointSizeF(8.5)
-        painter.setFont(font)
-        label_color = QColor("#FF4444") if self._violated else color
-        lp = QPen(label_color)
+        painter.setFont(shared["font"])
+        lp = QPen(color)
         lp.setCosmetic(True)
         painter.setPen(lp)
         label = f"⚠ cls:{self._class_id}" if self._violated else f"cls:{self._class_id}"
@@ -119,40 +149,18 @@ class BBoxOverlay(QGraphicsItem):
         painter.restore()
 
         if self._selected:
-            h_ids = [
-                HANDLE_TL,
-                HANDLE_TC,
-                HANDLE_TR,
-                HANDLE_ML,
-                HANDLE_MR,
-                HANDLE_BL,
-                HANDLE_BC,
-                HANDLE_BR,
-            ]
-            for _, (hx, hy) in zip(h_ids, self._handle_positions()):
+            painter.save()
+            painter.resetTransform()
+            painter.setPen(shared["handle_pen"])
+            painter.setBrush(shared["handle_brush"])
+            for hx, hy in self._handles:
                 screen = transform.map(QPointF(hx, hy))
-                painter.save()
-                painter.resetTransform()
-                hp = QPen(QColor("#000000"), 0.8)
-                hp.setCosmetic(True)
-                painter.setPen(hp)
-                painter.setBrush(QBrush(QColor("#FFFFFF")))
                 painter.drawEllipse(screen, _HANDLE_R, _HANDLE_R)
-                painter.restore()
+            painter.restore()
 
     def hit_test_handle(self, scene_pos: QPointF) -> int:
         if self._selected:
-            h_ids = [
-                HANDLE_TL,
-                HANDLE_TC,
-                HANDLE_TR,
-                HANDLE_ML,
-                HANDLE_MR,
-                HANDLE_BL,
-                HANDLE_BC,
-                HANDLE_BR,
-            ]
-            for hid, (hx, hy) in zip(h_ids, self._handle_positions()):
+            for hid, (hx, hy) in zip(_H_IDS, self._handles):
                 dx = scene_pos.x() - hx
                 dy = scene_pos.y() - hy
                 if (dx * dx + dy * dy) ** 0.5 <= _HIT_R:

@@ -29,16 +29,21 @@ def _is_packaged() -> bool:
 
 
 def setup_logging(level: int = logging.INFO) -> None:
-    APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    log_file = APP_CACHE_DIR / "profannotate.log"
-
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     datefmt = "%H:%M:%S"
 
     # File log always; console log only in unpackaged (dev) runs so AppImage
     # builds stay silent on stdout/stderr.
-    handlers: list[logging.Handler] = [logging.FileHandler(log_file, encoding="utf-8")]
-    if not _is_packaged():
+    handlers: list[logging.Handler] = []
+    try:
+        # Fails when ~/.profannotate exists as a plain file or HOME is
+        # read-only — logging must never abort startup.
+        APP_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        log_file = APP_CACHE_DIR / "profannotate.log"
+        handlers.append(logging.FileHandler(log_file, encoding="utf-8"))
+    except OSError:
+        pass
+    if not _is_packaged() or not handlers:
         handlers.append(logging.StreamHandler(sys.stdout))
 
     logging.basicConfig(level=level, format=fmt, datefmt=datefmt, handlers=handlers)

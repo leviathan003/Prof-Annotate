@@ -118,12 +118,12 @@ done
 # ── Hand build artifacts back to the host user (container runs as root) ─────────
 if [ -n "${HOST_UID:-}" ] && [ -n "${HOST_GID:-}" ]; then
     chown -R "$HOST_UID:$HOST_GID" \
-        "$ROOT"/ProfAnnotate-*-x86_64.AppImage \
+        "$ROOT"/ProfAnnotate-*.AppImage \
         "$ROOT/dist_nuitka" \
         "$ROOT"/*.egg-info \
         "$ROOT/build/logs" \
-        "$ROOT/build/patchelf-0.17.2" 2>/dev/null || true
+        "$ROOT"/build/patchelf-0.17.2* 2>/dev/null || true
 fi
 
 step "Container build complete"
-ls -lh "$ROOT"/ProfAnnotate-*-x86_64.AppImage 2>/dev/null || warn "no artifacts found"
+ls -lh "$ROOT"/ProfAnnotate-*.AppImage 2>/dev/null || warn "no artifacts found"

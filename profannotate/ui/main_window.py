@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from PySide6.QtCore import QObject, Qt, QThread, QUrl, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThread, QThreadPool, QUrl, Signal
 from PySide6.QtGui import QDesktopServices, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QFileDialog,
@@ -90,20 +90,27 @@ class _SingleAutoAnnotateWorker(QObject):
             from profannotate.core.inference.filter import filter_by_modality
             from profannotate.core.inference.postprocess import postprocess
             from profannotate.ui.dialogs.dataset_wizard import _reindex_keypoints_for_selection
-            from profannotate.utils.image import image_dimensions, load_image_rgb
+            from profannotate.utils.image import load_image_rgb
 
-            rgb = load_image_rgb(self._entry.image_path)
-            dims = image_dimensions(self._entry.image_path)
-            if rgb is None or dims is None:
+            # max_side=1280: the model input is 640, so draft-decoding large
+            # JPEGs costs zero accuracy and saves seconds on weak CPUs. Dims
+            # MUST come from the decoded array — postprocess letterbox math
+            # has to match what _preprocess actually resized.
+            rgb = load_image_rgb(self._entry.image_path, max_side=1280)
+            if rgb is None:
                 self.failed.emit("Could not load image, Annotator.")
                 return
-            w, h = dims
+            h, w = rgb.shape[:2]
             engine = InferenceEngine()
             engine.load()
-            raw = engine.run(rgb)
-            anns = postprocess(raw, w, h)
-            filtered = filter_by_modality(anns, self._modalities)
-            engine.unload()
+            try:
+                raw = engine.run(rgb)
+                anns = postprocess(raw, w, h)
+                filtered = filter_by_modality(anns, self._modalities)
+            finally:
+                # An inference failure must not leave the ONNX session (and
+                # its memory) resident — same leak class as commit 41279e5.
+                engine.unload()
             if self._active_kpt_names:
                 filtered = _reindex_keypoints_for_selection(filtered, self._active_kpt_names)
             self.done.emit(filtered)
@@ -151,13 +158,20 @@ class _DatasetIndexLoader(QObject):
     read_only = Signal()
     failed = Signal(str)
 
-    def __init__(self, root: Path, flat: bool = False) -> None:
+    def __init__(self, root: Path, flat: bool = False, gen_yaml: bool = False) -> None:
         super().__init__()
         self._root = root
         self._flat = flat
+        self._gen_yaml = gen_yaml
+        self._stop = False  # set from the GUI thread to abort between chunks
 
     def run(self) -> None:
         try:
+            # generate_yaml scans every label file to detect classes/keypoints
+            # — seconds of work on large datasets, so it must run here, not on
+            # the GUI thread.
+            if self._gen_yaml and not (self._root / "data.yaml").exists():
+                generate_yaml(self._root)
             if self._flat:
                 from profannotate.core.dataset.loader import load_flat_dataset
 
@@ -183,6 +197,8 @@ class _DatasetIndexLoader(QObject):
                     self.read_only.emit()
 
                 for partial_index, is_final in stream_dataset(self._root):
+                    if self._stop:
+                        return
                     self.chunk_ready.emit(partial_index, is_final)
         except Exception as exc:
             self.failed.emit(str(exc))
@@ -204,6 +220,7 @@ class _BulkAutoAnnotateWorker(QObject):
         self._root = root
         self._modalities = modalities
         self._active_kpt_names = active_kpt_names
+        self._stop = False  # set from the GUI thread to abort between images
 
     def run(self) -> None:
         try:
@@ -223,7 +240,7 @@ class _BulkAutoAnnotateWorker(QObject):
         from profannotate.core.inference.filter import filter_by_modality
         from profannotate.core.inference.postprocess import postprocess
         from profannotate.ui.dialogs.dataset_wizard import _reindex_keypoints_for_selection
-        from profannotate.utils.image import image_dimensions, load_image_rgb
+        from profannotate.utils.image import load_image_rgb
 
         # Lay down the labels tree + an empty .txt per image up front, so the
         # folder exists immediately regardless of how many detections follow.
@@ -232,30 +249,60 @@ class _BulkAutoAnnotateWorker(QObject):
 
         engine = InferenceEngine()
         engine.load()
-        for img_path in sorted(self._root.rglob("*")):
-            if img_path.suffix.lower() not in YOLO_IMAGE_EXTS:
-                continue
-            rgb = load_image_rgb(img_path)
-            if rgb is None:
-                continue
-            dims = image_dimensions(img_path)
-            if dims is None:
-                continue
-            w, h = dims
-            raw = engine.run(rgb)
-            anns = postprocess(raw, w, h)
-            filtered = filter_by_modality(anns, self._modalities)
-            if self._active_kpt_names:
-                filtered = _reindex_keypoints_for_selection(filtered, self._active_kpt_names)
-            lbl_path = label_path_for_image(self._root, img_path)
-            img_ann = ImageAnnotations(
-                image_path=str(img_path),
-                label_path=str(lbl_path),
-                instances=filtered,
-            )
-            write_label_file(img_ann)
-            self.progress.emit(img_path.name)
-        engine.unload()
+        try:
+            for img_path in sorted(self._root.rglob("*")):
+                if self._stop:
+                    break
+                if img_path.suffix.lower() not in YOLO_IMAGE_EXTS:
+                    continue
+                # Draft-decode: model input is 640 — see single-image worker.
+                rgb = load_image_rgb(img_path, max_side=1280)
+                if rgb is None:
+                    continue
+                h, w = rgb.shape[:2]
+                raw = engine.run(rgb)
+                anns = postprocess(raw, w, h)
+                filtered = filter_by_modality(anns, self._modalities)
+                if self._active_kpt_names:
+                    filtered = _reindex_keypoints_for_selection(filtered, self._active_kpt_names)
+                lbl_path = label_path_for_image(self._root, img_path)
+                img_ann = ImageAnnotations(
+                    image_path=str(img_path),
+                    label_path=str(lbl_path),
+                    instances=filtered,
+                )
+                write_label_file(img_ann)
+                self.progress.emit(img_path.name)
+        finally:
+            # A mid-batch failure must not leave the ONNX session resident —
+            # same leak class as commit 41279e5.
+            engine.unload()
+        # Regenerate data.yaml here (label scan takes seconds on large
+        # datasets) rather than in the GUI-thread done handler.
+        from profannotate.core.dataset.yaml_handler import generate_yaml
+
+        generate_yaml(self._root)
+
+
+class _GitLookupSignals(QObject):
+    done = Signal(int, object)  # generation, AnnotationCommit | None
+
+
+class _GitLookupTask(QRunnable):
+    """git log for one label file, off the GUI thread — on big repos
+    iter_commits can take seconds and froze every image navigation."""
+
+    def __init__(self, gen: int, label_path, repo_root, signals: _GitLookupSignals) -> None:
+        super().__init__()
+        self._gen = gen
+        self._label_path = label_path
+        self._repo_root = repo_root
+        self._signals = signals
+        self.setAutoDelete(True)
+
+    def run(self) -> None:
+        commit = get_last_annotation_commit(self._label_path, self._repo_root)
+        self._signals.done.emit(self._gen, commit)
 
 
 # ── Main window ───────────────────────────────────────────────────────────────
@@ -274,7 +321,6 @@ class MainWindow(QMainWindow):
         self._dirty_map: dict[str, ImageAnnotations] = {}
         self._is_git_repo: bool = False
         self._git_root: Optional[Path] = None
-        self._pending_gen_yaml: bool = False
         self._bg_thread: Optional[QThread] = None
         self._load_thread: Optional[QThread] = None
         self._dataset_undo_stack: list[dict] = []
@@ -490,8 +536,8 @@ class MainWindow(QMainWindow):
         else:
             split = YOLO_TRAIN_DIR
         entry = ImageEntry(
-            image_path=img_path,
-            label_path=lbl_path,
+            image_path=str(img_path),
+            label_path=str(lbl_path),
             split=split,
             is_corrupted=False,
             has_label=lbl_path.exists() and lbl_path.stat().st_size > 0,
@@ -511,7 +557,14 @@ class MainWindow(QMainWindow):
         self._load_entry_by_index(0)
 
     def _open_dataset(self, root: Path, from_wizard: bool = False) -> None:  # noqa: C901
-        subdirs = [p.name for p in root.iterdir() if p.is_dir()]
+        try:
+            subdirs = [p.name for p in root.iterdir() if p.is_dir()]
+        except OSError as exc:
+            ErrorDialog(
+                f"I could not read that directory, Annotator:\n\n{exc}",
+                self,
+            ).exec()
+            return
         unexpected = [d for d in subdirs if d not in ("images", "labels")]
         if unexpected:
             ErrorDialog(
@@ -594,9 +647,7 @@ class MainWindow(QMainWindow):
             if dlg.exec() == dlg.DialogCode.Accepted:
                 self._start_reshuffle(root)
             else:
-                if not (root / "data.yaml").exists():
-                    generate_yaml(root)
-                self._start_index_load(root, flat=False, gen_yaml=False)
+                self._start_index_load(root, flat=False, gen_yaml=True)
             return
 
         if diag.scenario == SCENARIO_STRUCTURED_LABELS_EMPTY:
@@ -648,9 +699,7 @@ class MainWindow(QMainWindow):
                 self._start_index_load(root, flat=False, gen_yaml=False)
             return
 
-        if not (root / "data.yaml").exists():
-            generate_yaml(root)
-        self._start_index_load(root, flat=False, gen_yaml=False)
+        self._start_index_load(root, flat=False, gen_yaml=True)
 
     def _start_reshuffle(self, root: Path) -> None:
         from datetime import datetime
@@ -744,12 +793,38 @@ class MainWindow(QMainWindow):
         if getattr(self, "_progress_dlg", None) is not None:
             self._progress_dlg.status("All images annotated — sealing labels…", "done")
         self._close_progress_dialog()
-        generate_yaml(root)
         self._start_index_load(root, flat=False, gen_yaml=False)
 
+    def _stop_worker_threads(self, timeout_ms: int = 3000) -> None:
+        """Cooperatively stop any live background threads. Long-running workers
+        check their `_stop` flag between items; then quit + bounded wait. A
+        QThread wrapper GC'd while its thread runs hard-aborts the process."""
+        for wattr, tattr in (
+            ("_load_worker", "_load_thread"),
+            ("_aa_worker", "_aa_thread"),
+            ("_ai_worker", "_ai_thread"),
+            ("_bg_worker", "_bg_thread"),
+        ):
+            worker = getattr(self, wattr, None)
+            if worker is not None:
+                worker._stop = True
+            thread = getattr(self, tattr, None)
+            if thread is None:
+                continue
+            try:
+                if thread.isRunning():
+                    thread.quit()
+                    thread.wait(timeout_ms)
+            except RuntimeError:
+                pass  # C++ object already deleted via deleteLater
+
     def _start_index_load(self, root: Path, flat: bool, gen_yaml: bool) -> None:
+        # A still-running loader from a previously opened dataset would keep
+        # emitting chunks into the new dataset's state.
+        old = getattr(self, "_load_worker", None)
+        if old is not None:
+            old._stop = True
         self._dataset_root = root
-        self._pending_gen_yaml = gen_yaml
         self._dataset_index = None
         self._current_entry = None
         self._current_idx = 0
@@ -764,7 +839,7 @@ class MainWindow(QMainWindow):
         self._progress_dlg.status("Indexing dataset…", "active")
 
         self._load_thread = QThread()
-        self._load_worker = _DatasetIndexLoader(root, flat=flat)
+        self._load_worker = _DatasetIndexLoader(root, flat=flat, gen_yaml=gen_yaml)
         self._load_worker.moveToThread(self._load_thread)
         self._load_thread.started.connect(self._load_worker.run)
         self._load_worker.chunk_ready.connect(
@@ -819,8 +894,6 @@ class MainWindow(QMainWindow):
         self._close_progress_dialog()
 
         yaml_path = self._dataset_root / "data.yaml"
-        if self._pending_gen_yaml and not yaml_path.exists():
-            generate_yaml(self._dataset_root)
 
         suppress_kpt = getattr(self, "_suppress_fresh_kpt_prompt", False)
         self._suppress_fresh_kpt_prompt = False
@@ -1086,7 +1159,7 @@ class MainWindow(QMainWindow):
     def _navigate_prev(self) -> None:
         self._step_within_split(-1)
 
-    def _schedule_prefetch_window(self, half: int = 20) -> None:
+    def _schedule_prefetch_window(self, half: int = 10) -> None:
         """Tell the canvas to load the ±`half` neighbours within the current
         split into its RGB cache. Wraps around at the split boundaries so a
         sliding window keeps following the user's position."""
@@ -1099,8 +1172,8 @@ class MainWindow(QMainWindow):
         n = len(split_list)
         paths: list[str] = []
         for d in range(1, half + 1):
-            paths.append(str(split_list[(pos + d) % n].image_path))
-            paths.append(str(split_list[(pos - d) % n].image_path))
+            paths.append(split_list[(pos + d) % n].image_path)
+            paths.append(split_list[(pos - d) % n].image_path)
         self._canvas.prefetch_paths(paths)
 
     # ── Canvas callbacks ──────────────────────────────────────────────────────
@@ -1108,17 +1181,27 @@ class MainWindow(QMainWindow):
     def _on_image_loaded(self, path: str, w: int, h: int, corrupted: bool, annotated: bool) -> None:
         filename = Path(path).name
         self._status_bar.update_image_info(filename, w, h, corrupted, annotated)
+        self._status_bar.update_git_info(None)
         if self._is_git_repo and self._current_entry:
-            commit = get_last_annotation_commit(self._current_entry.label_path, self._git_root)
+            sigs = getattr(self, "_git_signals", None)
+            if sigs is None:
+                sigs = self._git_signals = _GitLookupSignals()
+                sigs.done.connect(self._on_git_lookup_done, Qt.ConnectionType.QueuedConnection)
+            self._git_gen = getattr(self, "_git_gen", 0) + 1
+            QThreadPool.globalInstance().start(
+                _GitLookupTask(self._git_gen, self._current_entry.label_path, self._git_root, sigs)
+            )
+
+    def _on_git_lookup_done(self, gen: int, commit) -> None:
+        # Drop stale results — the user may have navigated past this image.
+        if gen == getattr(self, "_git_gen", 0):
             self._status_bar.update_git_info(commit)
-        else:
-            self._status_bar.update_git_info(None)
 
     def _on_annotations_changed(self, ann: ImageAnnotations) -> None:
         self._dirty_map[ann.image_path] = ann
         self._json_editor.set_annotations(ann)
         if self._current_entry:
-            self._file_explorer.mark_unsaved(str(self._current_entry.image_path))
+            self._file_explorer.mark_unsaved(self._current_entry.image_path)
         if self._dataset_root:
             # Debounce: the previous code called save_session on every
             # annotation tick (e.g. every mouse-move while dragging a kpt),
@@ -1130,7 +1213,7 @@ class MainWindow(QMainWindow):
         has_label = len(ann.instances) > 0
         self._dirty_map.pop(ann.image_path, None)
         if self._current_entry:
-            self._file_explorer.mark_saved(str(self._current_entry.image_path), has_label=has_label)
+            self._file_explorer.mark_saved(self._current_entry.image_path, has_label=has_label)
         if not self._dirty_map and self._dataset_root:
             clear_session(self._dataset_root)
         self._stats_panel.set_index(self._dataset_index)
@@ -1154,20 +1237,29 @@ class MainWindow(QMainWindow):
         self._canvas._undo.clear()
         self._canvas._update_border()
         has_label = len(ann.instances) > 0
-        self._file_explorer.mark_saved(str(self._current_entry.image_path), has_label=has_label)
+        self._file_explorer.mark_saved(self._current_entry.image_path, has_label=has_label)
         self._dirty_map.pop(ann.image_path, None)
         if not self._dirty_map and self._dataset_root:
             clear_session(self._dataset_root)
         self._stats_panel.set_index(self._dataset_index)
-        self._status_bar.showMessage(f"✓  Auto-saved {self._current_entry.image_path.name}", 2000)
+        self._status_bar.showMessage(
+            f"✓  Auto-saved {Path(self._current_entry.image_path).name}", 2000
+        )
 
     # ── Global undo ───────────────────────────────────────────────────────────
 
     def _on_global_undo(self) -> None:
         if self._dataset_undo_stack:
             originals = self._dataset_undo_stack.pop()
-            for path, content in originals.items():
-                Path(path).write_text(content, encoding="utf-8")
+            try:
+                for path, content in originals.items():
+                    Path(path).write_text(content, encoding="utf-8")
+            except OSError as exc:
+                ErrorDialog(
+                    f"I could not restore the previous label files, Annotator:\n\n{exc}",
+                    self,
+                ).exec()
+                return
             if self._dataset_root:
                 self._yaml_editor.load(self._dataset_root / "data.yaml")
             if self._current_entry:
@@ -1247,7 +1339,7 @@ class MainWindow(QMainWindow):
         if not modalities:
             return
 
-        img_name = self._current_entry.image_path.name
+        img_name = Path(self._current_entry.image_path).name
         self._progress_dlg = self._make_progress_dialog(
             title="Auto-annotating this image, Annotator.",
             subtitle=(
@@ -1278,17 +1370,22 @@ class MainWindow(QMainWindow):
         self._ai_worker.failed.connect(self._ai_thread.quit)
         self._ai_thread.finished.connect(self._ai_thread.deleteLater)
         self._ai_thread.start()
+        # Lock canvas + explorer while inference runs: navigating or editing
+        # mid-run would apply the diff to a different image's annotations.
+        self._set_loading(True, "Auto-annotating…")
 
     def _on_auto_annotate_failed(self, msg: str) -> None:
+        self._set_loading(False)
         self._close_progress_dialog()
         ErrorDialog(f"The auto-annotator encountered a problem, Annotator:\n\n{msg}", self).exec()
 
     def _on_auto_done(self, new_annotations: list) -> None:
+        self._set_loading(False)
         if getattr(self, "_progress_dlg", None) is not None:
             self._progress_dlg.status("Loading the inference engine…", "done")
             if self._current_entry is not None:
                 self._progress_dlg.status(
-                    f"Examining  {self._current_entry.image_path.name}", "done"
+                    f"Examining  {Path(self._current_entry.image_path).name}", "done"
                 )
         self._close_progress_dialog()
         if self._canvas._annotations is None:
@@ -1333,13 +1430,17 @@ class MainWindow(QMainWindow):
             self._apply_proportional_sizes()
 
     def _save_layout(self) -> None:
-        LAYOUT_FILE.parent.mkdir(parents=True, exist_ok=True)
         data = {
             "splitter": self._splitter.sizes(),
             "right_splitter": self._right_splitter.sizes(),
             "geometry": self.saveGeometry().toHex().data().decode(),
         }
-        LAYOUT_FILE.write_text(json.dumps(data))
+        try:
+            # Best-effort: a read-only home must not crash the close path.
+            LAYOUT_FILE.parent.mkdir(parents=True, exist_ok=True)
+            LAYOUT_FILE.write_text(json.dumps(data))
+        except OSError:
+            pass
 
     def closeEvent(self, event) -> None:
         # Cancel any pending debounced autosave — we're about to write
@@ -1347,11 +1448,13 @@ class MainWindow(QMainWindow):
         timer = getattr(self, "_autosave_timer", None)
         if timer is not None and timer.isActive():
             timer.stop()
+        self._stop_worker_threads()
         self._autosave_current()
         # Flush any pending data.yaml edits the user hasn't Ctrl+S'd.
         self._yaml_editor.flush_if_dirty()
         if self._dataset_root and self._dirty_map:
             save_session(self._dataset_root, self._dirty_map)
         self._save_layout()
+        self._stats_panel.shutdown()
         self._stats_panel.clear()
         super().closeEvent(event)
