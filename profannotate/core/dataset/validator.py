@@ -304,8 +304,6 @@ def diagnose_dataset(root: Path) -> DatasetDiagnosis:
             diag.scenario = SCENARIO_IMAGES_ONLY_FLAT
         return diag
 
-    structured_dirs = {d for d in (train_img_dir, val_img_dir) if d is not None}
-
     if structured_image_count == 0:
         # Dirs exist but no images inside them. Check labels.
         has_any_lbl = (
