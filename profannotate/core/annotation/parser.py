@@ -180,7 +180,10 @@ def _parse_segmentation(class_id, rest, lineno, path):
     try:
         vals = _floats(rest)
         mask = SegmentationMask(points=[(vals[i], vals[i + 1]) for i in range(0, len(vals), 2)])
-        return Annotation(class_id=class_id, mask=mask)
+        # Invariant: a mask always has a bbox. A YOLO seg line stores only the
+        # polygon (the box is implicit), so derive it here — keeps the instance
+        # editable and makes the next save a non-ambiguous bbox+polygon line.
+        return Annotation(class_id=class_id, bbox=BBox.from_polygon(mask.points), mask=mask)
     except (ValueError, IndexError) as e:
         logger.warning("%s:%d seg error: %s", path, lineno, e)
         return None

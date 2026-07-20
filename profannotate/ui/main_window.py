@@ -152,6 +152,30 @@ class _ReshuffleWorker(QObject):
             self.failed.emit(str(exc))
 
 
+class _SegConvertWorker(QObject):
+    """Off-thread one-time normalization of an external bare-polygon YOLO-seg
+    dataset into the tool's canonical `class bbox <polygon>` form."""
+
+    finished = Signal(object)  # root
+    failed = Signal(str)
+    log_line = Signal(str, str)
+
+    def __init__(self, root: Path) -> None:
+        super().__init__()
+        self._root = root
+
+    def run(self) -> None:
+        try:
+            from profannotate.core.dataset.migrate import normalize_seg_labels
+
+            self.log_line.emit("Scanning segmentation labels…", "active")
+            n = normalize_seg_labels(self._root)
+            self.log_line.emit(f"Converted {n} polygon(s) to editable format.", "done")
+            self.finished.emit(self._root)
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+
 class _DatasetIndexLoader(QObject):
     chunk_ready = Signal(object, bool)  # (partial_index, is_final)
     status = Signal(str)
@@ -232,6 +256,7 @@ class _BulkAutoAnnotateWorker(QObject):
     def _execute(self) -> None:
         from profannotate.core.annotation.models import ImageAnnotations
         from profannotate.core.annotation.writer import (
+            dataset_num_keypoints,
             label_path_for_image,
             materialize_empty_labels,
             write_label_file,
@@ -271,17 +296,24 @@ class _BulkAutoAnnotateWorker(QObject):
                     label_path=str(lbl_path),
                     instances=filtered,
                 )
-                write_label_file(img_ann)
+                write_label_file(
+                    img_ann, dataset_num_keypoints(self._modalities, self._active_kpt_names)
+                )
                 self.progress.emit(img_path.name)
         finally:
             # A mid-batch failure must not leave the ONNX session resident —
             # same leak class as commit 41279e5.
             engine.unload()
         # Regenerate data.yaml here (label scan takes seconds on large
-        # datasets) rather than in the GUI-thread done handler.
+        # datasets) rather than in the GUI-thread done handler. Declare the
+        # keypoint count honestly (0 for a bbox-only / bbox+seg run) so the yaml
+        # matches the labels the worker just wrote.
         from profannotate.core.dataset.yaml_handler import generate_yaml
 
-        generate_yaml(self._root)
+        generate_yaml(
+            self._root,
+            num_keypoints=dataset_num_keypoints(self._modalities, self._active_kpt_names),
+        )
 
 
 class _GitLookupSignals(QObject):
@@ -585,6 +617,29 @@ class MainWindow(QMainWindow):
 
         from profannotate.ui.dialogs.confirm_dialog import ConfirmDialog
 
+        # External standard YOLO-seg datasets store bare polygons (no explicit
+        # box). Detect and offer a one-time conversion to the tool's canonical
+        # bbox-anchored form before indexing, so masks are never mis-parsed.
+        if not from_wizard:
+            from profannotate.core.annotation.writer import dataset_writable
+            from profannotate.core.dataset.migrate import looks_like_yolo_seg
+
+            if looks_like_yolo_seg(root) and dataset_writable(root):
+                convert = ConfirmDialog(
+                    "Segmentation Dataset Detected",
+                    "This looks like a YOLO-segmentation dataset, Annotator — its "
+                    "labels are bare polygons with no bounding boxes.\n\n"
+                    "Shall I convert it to the editable format? I will derive a "
+                    "bounding box from each polygon and record the dataset as "
+                    "keypoint-free. Your polygons are preserved exactly.",
+                    "> Yes, convert it",
+                    "No, open as-is",
+                    self,
+                )
+                if convert.exec() == convert.DialogCode.Accepted:
+                    self._start_seg_convert(root)
+                    return
+
         diag = diagnose_dataset(root)
 
         if diag.scenario == SCENARIO_EMPTY:
@@ -742,6 +797,35 @@ class MainWindow(QMainWindow):
         self._close_progress_dialog()
         self._start_index_load(new_root, flat=False, gen_yaml=False)
 
+    def _start_seg_convert(self, root: Path) -> None:
+        self._progress_dlg = self._make_progress_dialog(
+            title="Converting segmentation labels, Annotator.",
+            subtitle=(
+                "I am deriving a bounding box for every polygon and sealing the "
+                "dataset as keypoint-free. This runs once."
+            ),
+        )
+        self._progress_dlg.show()
+
+        self._bg_thread = QThread()
+        self._bg_worker = _SegConvertWorker(root)
+        self._bg_worker.moveToThread(self._bg_thread)
+        self._bg_thread.started.connect(self._bg_worker.run)
+        self._bg_worker.log_line.connect(self._on_reshuffle_log, Qt.ConnectionType.QueuedConnection)
+        self._bg_worker.finished.connect(
+            self._on_seg_convert_done, Qt.ConnectionType.QueuedConnection
+        )
+        self._bg_worker.failed.connect(self._on_bg_error, Qt.ConnectionType.QueuedConnection)
+        self._bg_worker.finished.connect(self._bg_thread.quit)
+        self._bg_worker.failed.connect(self._bg_thread.quit)
+        self._bg_thread.finished.connect(self._bg_thread.deleteLater)
+        self._bg_thread.start()
+
+    def _on_seg_convert_done(self, root: Path) -> None:
+        self._close_progress_dialog()
+        # Canonical labels + kpt_shape:[0,3] are now on disk → load normally.
+        self._start_index_load(root, flat=False, gen_yaml=False)
+
     def _start_bulk_auto_annotate(self, root: Path, modalities: "set[Modality]") -> None:
         # Modalities are chosen by the caller before this point.
         self._progress_dlg = self._make_progress_dialog(
@@ -872,6 +956,10 @@ class MainWindow(QMainWindow):
     def _on_chunk_ready(self, index: "DatasetIndex", is_final: bool) -> None:
         self._dataset_index = index
 
+        # Grey out the Keypoints toggle for a keypoint-free dataset (N == 0) so it
+        # can't be enabled — keypoints cannot be represented there.
+        self._modality_selector.set_modality_enabled(Modality.KEYPOINTS, index.num_keypoints > 0)
+
         if getattr(self, "_progress_dlg", None) is not None:
             self._progress_dlg.status(f"Indexed {index.total} images…", "active")
 
@@ -895,9 +983,19 @@ class MainWindow(QMainWindow):
 
         yaml_path = self._dataset_root / "data.yaml"
 
+        # Foreign dataset whose keypoint count couldn't be resolved from geometry
+        # (masks present) — ask once and persist, so the format is never guessed.
+        if index.kpt_config_needs_prompt:
+            self._prompt_kpt_count_for_ambiguous_dataset()
+
         suppress_kpt = getattr(self, "_suppress_fresh_kpt_prompt", False)
         self._suppress_fresh_kpt_prompt = False
-        if index.kpt_config_synthesized and index.annotated_count == 0 and not suppress_kpt:
+        if (
+            index.kpt_config_synthesized
+            and index.num_keypoints > 0
+            and index.annotated_count == 0
+            and not suppress_kpt
+        ):
             self._prompt_kpt_selection_for_fresh_dataset()
 
         self._yaml_editor.load(yaml_path)
@@ -923,6 +1021,52 @@ class MainWindow(QMainWindow):
                 "commit your work, copy the dataset to a writable location first.",
                 self,
             ).exec()
+
+    def _prompt_kpt_count_for_ambiguous_dataset(self) -> None:
+        """Foreign dataset with masks but no declared keypoint count. Ask whether
+        it uses keypoints (and how many), then persist to data.yaml so it is
+        resolved once and for all."""
+        from profannotate.core.dataset.yaml_handler import load_yaml, save_yaml
+        from profannotate.ui.dialogs.confirm_dialog import ConfirmDialog
+        from profannotate.ui.dialogs.kpt_selection_dialog import KptSelectionDialog
+
+        idx = self._dataset_index
+        if idx is None:
+            return
+
+        uses_kpts = ConfirmDialog(
+            "Does This Dataset Use Keypoints?",
+            "Annotator, I could not tell from the labels whether this dataset "
+            "carries keypoints (its instances have segmentation masks, which "
+            "hide the count).\n\n"
+            "Does it include keypoints? If not, I will treat it as "
+            "segmentation-only.",
+            "> Yes, it has keypoints",
+            "No, masks only",
+            self,
+        )
+        if uses_kpts.exec() == uses_kpts.DialogCode.Accepted:
+            dlg = KptSelectionDialog(self, preselected=None)
+            if dlg.exec() != dlg.DialogCode.Accepted:
+                return  # cancelled — leave unresolved; will ask again next open
+            names = dlg.selected_names()
+            if not names:
+                return
+            count = len(names)
+        else:
+            names, count = [], 0
+
+        idx.active_keypoint_names = names
+        idx._keypoint_count = count
+        idx.kpt_config_needs_prompt = False
+        data = load_yaml(self._dataset_root)
+        data["kpt_shape"] = [count, 3]
+        if names:
+            data["keypoint_names"] = names
+        else:
+            data.pop("keypoint_names", None)
+        save_yaml(self._dataset_root, data)
+        self._modality_selector.set_modality_enabled(Modality.KEYPOINTS, count > 0)
 
     def _prompt_kpt_selection_for_fresh_dataset(self) -> None:
         from profannotate.core.dataset.yaml_handler import load_yaml, save_yaml
@@ -1232,7 +1376,7 @@ class MainWindow(QMainWindow):
         from profannotate.core.annotation.writer import write_label_file
 
         ann = self._canvas._annotations
-        write_label_file(ann)
+        write_label_file(ann, self._canvas._num_keypoints)
         self._canvas._dirty = False
         self._canvas._undo.clear()
         self._canvas._update_border()
@@ -1338,6 +1482,10 @@ class MainWindow(QMainWindow):
         modalities = prompt.selected_modalities()
         if not modalities:
             return
+        # A keypoint-free dataset (N == 0) cannot store keypoints — drop them from
+        # the request so the accepted result stays consistent with the dataset.
+        if self._dataset_index is not None and self._dataset_index.num_keypoints == 0:
+            modalities = modalities - {Modality.KEYPOINTS}
 
         img_name = Path(self._current_entry.image_path).name
         self._progress_dlg = self._make_progress_dialog(

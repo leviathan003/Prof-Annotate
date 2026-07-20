@@ -465,13 +465,19 @@ class AnnotationCanvas(QFrame):
 
     def _init_tools(self) -> None:
         self._bbox_tool = BBoxTool(self._scene, self._img_w, self._img_h, self._on_bbox_drawn)
-        self._kpt_tool = KeypointTool(
-            self._scene,
-            self._img_w,
-            self._img_h,
-            self._on_keypoint_placed,
-            active_kpt_names=self._active_kpt_names,
-        )
+        # Keypoint tool only exists for keypoint datasets (N > 0). A keypoint-free
+        # dataset (bbox-only / bbox+seg) leaves it None so keypoint mode can't be
+        # entered and no phantom keypoints can be placed.
+        if self._num_keypoints > 0:
+            self._kpt_tool = KeypointTool(
+                self._scene,
+                self._img_w,
+                self._img_h,
+                self._on_keypoint_placed,
+                active_kpt_names=self._active_kpt_names,
+            )
+        else:
+            self._kpt_tool = None
         self._seg_tool = SegmentationTool(
             self._scene, self._img_w, self._img_h, self._on_seg_closed
         )
@@ -729,7 +735,7 @@ class AnnotationCanvas(QFrame):
         self._clear_violations()
         from profannotate.core.annotation.writer import write_label_file
 
-        if not write_label_file(self._annotations):
+        if not write_label_file(self._annotations, self._num_keypoints):
             from profannotate.ui.dialogs.error_dialog import ErrorDialog
 
             ErrorDialog(
@@ -790,6 +796,9 @@ class AnnotationCanvas(QFrame):
     # ── Draw mode ─────────────────────────────────────────────────────────────
 
     def _activate_draw_mode(self, mode: str) -> None:
+        if mode == "kpts" and (self._num_keypoints <= 0 or self._kpt_tool is None):
+            self._show_warning("This dataset has no keypoints, Annotator — nothing to place here.")
+            return
         if mode in ("kpts", "seg"):
             if (
                 self._selected_instance is None

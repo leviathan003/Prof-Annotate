@@ -49,3 +49,13 @@ class ModalitySelector(QWidget):
     def set_modality_visible(self, modality: Modality, visible: bool) -> None:
         if modality in self._buttons:
             self._buttons[modality].setChecked(visible)
+
+    def set_modality_enabled(self, modality: Modality, enabled: bool) -> None:
+        """Enable/disable a modality toggle. Used to grey out Keypoints for a
+        keypoint-free dataset (num_keypoints == 0) so it can't be toggled on."""
+        btn = self._buttons.get(modality)
+        if btn is None:
+            return
+        btn.setEnabled(enabled)
+        if not enabled:
+            btn.setChecked(False)

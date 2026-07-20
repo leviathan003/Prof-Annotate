@@ -51,9 +51,7 @@ class BBox:
         return cls(cx, cy, w, h).clamp()
 
     @classmethod
-    def from_keypoints(
-        cls, keypoints: list, padding: float = 0.0
-    ) -> Optional["BBox"]:
+    def from_keypoints(cls, keypoints: list, padding: float = 0.0) -> Optional["BBox"]:
         """Tight (normalized) box wrapping the usable keypoints, padded + clamped.
 
         Usable = present (not None), labeled (visibility > 0), and not the
@@ -77,6 +75,23 @@ class BBox:
         w = x2 - x1
         h = y2 - y1
         return cls(cx, cy, w, h).clamp()
+
+    @classmethod
+    def from_polygon(cls, points: list, padding: float = 0.0) -> Optional["BBox"]:
+        """Tight (normalized) box wrapping a segmentation polygon, padded + clamped.
+
+        Enforces the "a mask always has a bbox" invariant: when a mask reaches
+        disk without an explicit box, this derives one so the serialized line is
+        never a bare polygon (which is ambiguous with a bbox+polygon line).
+        Returns None if the polygon has no points.
+        """
+        xs = [p[0] for p in points or []]
+        ys = [p[1] for p in points or []]
+        if not xs:
+            return None
+        x1, x2 = min(xs) - padding, max(xs) + padding
+        y1, y2 = min(ys) - padding, max(ys) + padding
+        return cls((x1 + x2) / 2, (y1 + y2) / 2, x2 - x1, y2 - y1).clamp()
 
 
 @dataclass(slots=True)

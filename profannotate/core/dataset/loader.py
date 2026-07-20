@@ -112,6 +112,13 @@ class DatasetIndex:
     yaml_path: Path | None = None
     active_keypoint_names: list[str] = field(default_factory=list)
     kpt_config_synthesized: bool = False
+    # Set when the keypoint count could not be resolved from a foreign dataset's
+    # geometry (masks present) — the GUI must ask the annotator once and persist.
+    kpt_config_needs_prompt: bool = False
+    # Explicitly resolved keypoint count (0 = genuinely keypoint-free dataset).
+    # None means "unresolved" → num_keypoints falls back to the active schema,
+    # preserving legacy behavior for datasets that declare no kpt config.
+    _keypoint_count: int | None = field(default=None, repr=False, compare=False)
 
     # Cached split sub-lists. Populated by `freeze()`; consumed by nav code
     # that previously filtered the full entries list every step. None until
@@ -124,6 +131,9 @@ class DatasetIndex:
 
     @property
     def num_keypoints(self) -> int:
+        # An explicitly resolved count wins (0 included — a keypoint-free dataset).
+        if self._keypoint_count is not None:
+            return self._keypoint_count
         if self.active_keypoint_names:
             return len(self.active_keypoint_names)
         return get_active_schema().count
@@ -192,8 +202,8 @@ def _apply_yaml_kpt_config(index: DatasetIndex) -> None:
     to the full skeleton) and write the result back so the yaml is canonical.
     """
     from profannotate.core.dataset.yaml_handler import (
-        _detect_num_keypoints,
         load_yaml,
+        resolve_keypoint_count,
         save_yaml,
     )
 
@@ -203,6 +213,7 @@ def _apply_yaml_kpt_config(index: DatasetIndex) -> None:
 
     if isinstance(names, list) and names:
         index.active_keypoint_names = list(names)
+        index._keypoint_count = len(names)
         if not (isinstance(shape, list) and len(shape) == 2 and shape[0] == len(names)):
             data["kpt_shape"] = [len(names), 3]
             data["keypoint_names"] = list(names)
@@ -211,27 +222,40 @@ def _apply_yaml_kpt_config(index: DatasetIndex) -> None:
 
     if isinstance(shape, list) and len(shape) == 2 and isinstance(shape[0], int):
         n = shape[0]
+        # An explicit kpt_shape is authoritative — including [0, 3], which
+        # declares a genuinely keypoint-free (bbox / bbox+seg) dataset.
         default_names = get_active_schema().names_in_order()
         synthesized = (
             default_names[:n] if n <= len(default_names) else [f"kpt_{i}" for i in range(n)]
         )
         index.active_keypoint_names = synthesized
+        index._keypoint_count = n
         data["keypoint_names"] = synthesized
         save_yaml(index.root, data)
         return
 
-    # Neither key present — infer from labels, fall back to full skeleton.
+    # Neither key present — resolve from label geometry where possible.
     default_names = get_active_schema().names_in_order()
-    detected = _detect_num_keypoints(index.root)
-    if detected is not None and detected != len(default_names):
-        synthesized = [f"kpt_{i}" for i in range(detected)]
-    else:
-        synthesized = default_names
-    index.active_keypoint_names = synthesized
-    index.kpt_config_synthesized = True
-    data["kpt_shape"] = [len(synthesized), 3]
-    data["keypoint_names"] = synthesized
-    save_yaml(index.root, data)
+    count, confident = resolve_keypoint_count(index.root)
+    if confident:
+        # Recoverable: pure-pose N, or 0 for a detection dataset. Authoritative.
+        synthesized = (
+            default_names[:count]
+            if count <= len(default_names)
+            else [f"kpt_{i}" for i in range(count)]
+        )
+        index.active_keypoint_names = synthesized
+        index._keypoint_count = count
+        data["kpt_shape"] = [count, 3]
+        data["keypoint_names"] = synthesized
+        save_yaml(index.root, data)
+        return
+
+    # Ambiguous (masks present, N unrecoverable from counts) — the GUI must ask
+    # the annotator once. Leave _keypoint_count None (display falls back to the
+    # schema until answered) and DON'T stamp a guessed skeleton into the yaml.
+    index.active_keypoint_names = default_names
+    index.kpt_config_needs_prompt = True
 
 
 def load_flat_dataset(root: Path) -> DatasetIndex:

@@ -62,14 +62,18 @@ class ModalityPrompt(QDialog):
         # Checkboxes
         self._checks: dict[Modality, QCheckBox] = {}
         specs = [
-            (Modality.BBOX, "> BBox", "#00CFFF"),
-            (Modality.KEYPOINTS, "> Keypoints", "#FFD700"),
-            (Modality.SEGMENTATION, "> Mask", "#CC44FF"),
+            # BBox is compulsory — keypoints/masks only exist alongside a box.
+            (Modality.BBOX, "> BBox (required)", "#00CFFF", True),
+            (Modality.KEYPOINTS, "> Keypoints", "#FFD700", False),
+            (Modality.SEGMENTATION, "> Mask", "#CC44FF", False),
         ]
-        for modality, label, color in specs:
+        for modality, label, color, locked in specs:
             cb = QCheckBox(label)
             cb.setChecked(True)
             cb.setStyleSheet(f"color: {color};")
+            if locked:
+                cb.setEnabled(False)  # stays checked; cannot be deselected
+                cb.setToolTip("A bounding box is required.")
             inner.addWidget(cb)
             self._checks[modality] = cb
 
@@ -96,7 +100,9 @@ class ModalityPrompt(QDialog):
         outer.addWidget(frame, alignment=Qt.AlignmentFlag.AlignCenter)
 
     def selected_modalities(self) -> set[Modality]:
-        return {m for m, cb in self._checks.items() if cb.isChecked()}
+        selected = {m for m, cb in self._checks.items() if cb.isChecked()}
+        selected.add(Modality.BBOX)  # compulsory — never omit it
+        return selected
 
     def keyPressEvent(self, event) -> None:  # noqa: D401
         if event.key() == Qt.Key.Key_Escape:

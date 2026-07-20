@@ -91,7 +91,8 @@ class KeypointTool:
 
     def activate(self, start_idx: int = 0) -> None:
         self._active = True
-        self._current_idx = start_idx % self._num_active
+        # Guard against a keypoint-free schema (num_active == 0): never divide by 0.
+        self._current_idx = start_idx % self._num_active if self._num_active else 0
 
     def deactivate(self) -> None:
         self._active = False
@@ -106,13 +107,15 @@ class KeypointTool:
 
     def skip(self) -> None:
         """Advance past current keypoint without placing — right-click."""
+        if not self._num_active:
+            return
         self._current_idx = (self._current_idx + 1) % self._num_active
 
     def mouse_move(self, scene_pos: QPointF) -> bool:
         return self._active
 
     def mouse_press(self, scene_pos: QPointF) -> bool:
-        if not self._active:
+        if not self._active or not self._num_active:
             return False
         kp = Keypoint.from_pixel(
             scene_pos.x(), scene_pos.y(), self._img_w, self._img_h, visibility=2

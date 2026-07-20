@@ -47,25 +47,16 @@ class KeypointOverlay(QGraphicsItem):
             self._kpt_names = [schema.keypoint_names.get(i, str(i)) for i in range(len(keypoints))]
             self._connections = list(schema.connections)
 
-        self._compute_bounds()
-
-    def _compute_bounds(self) -> None:
-        pts = [kp for kp in self._keypoints if _kpt_visible(kp)]
-        if not pts:
-            self._bounds = QRectF(0, 0, self._img_w, self._img_h)
-            return
-        xs = [kp.x * self._img_w for kp in pts]
-        ys = [kp.y * self._img_h for kp in pts]
-        m = _SELECTED_RADIUS + 4
-        self._bounds = QRectF(
-            min(xs) - m,
-            min(ys) - m,
-            max(xs) - min(xs) + m * 2,
-            max(ys) - min(ys) + m * 2,
-        )
-
     def boundingRect(self) -> QRectF:
-        return self._bounds
+        # Full image rect, not a tight box around the keypoints. The vertex dots
+        # and labels are painted in DEVICE space (resetTransform), but Qt derives
+        # the repaint/expose region from boundingRect in SCENE space. A tight box
+        # maps to only a few device px when the view is fit-scaled < 1, so a
+        # partial update() (e.g. select_keypoint) invalidates too small a region
+        # and the device-space dot is clipped away until a full repaint. Covering
+        # the whole image guarantees the marks are always inside the exposed
+        # region. DiffOverlay does the same for the identical paint pattern.
+        return QRectF(0, 0, self._img_w, self._img_h)
 
     def paint(
         self, painter: QPainter, option: QStyleOptionGraphicsItem, widget: QWidget | None = None
@@ -96,9 +87,7 @@ class KeypointOverlay(QGraphicsItem):
             ka, kb = kpts[a], kpts[b]
             if not (_kpt_visible(ka) and _kpt_visible(kb)):
                 continue
-            painter.setPen(
-                pen_full if (ka.visibility == 2 and kb.visibility == 2) else pen_dim
-            )
+            painter.setPen(pen_full if (ka.visibility == 2 and kb.visibility == 2) else pen_dim)
             painter.drawLine(
                 QPointF(ka.x * iw, ka.y * ih),
                 QPointF(kb.x * iw, kb.y * ih),
@@ -142,9 +131,7 @@ class KeypointOverlay(QGraphicsItem):
             painter.restore()
 
     def update_keypoints(self, keypoints: list[Keypoint]) -> None:
-        self.prepareGeometryChange()
         self._keypoints = keypoints
-        self._compute_bounds()
         self.update()
 
     def select_keypoint(self, idx: int | None) -> None:

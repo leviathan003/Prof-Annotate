@@ -11,6 +11,7 @@ import tempfile
 from pathlib import Path
 
 from profannotate.config.constants import (
+    NUM_KEYPOINTS,
     YOLO_IMAGE_EXTS,
     YOLO_IMAGES_SUBDIR,
     YOLO_LABEL_EXT,
@@ -22,6 +23,22 @@ from profannotate.core.annotation.models import Annotation, BBox, ImageAnnotatio
 from profannotate.utils.image import derive_label_path
 
 logger = logging.getLogger(__name__)
+
+
+def dataset_num_keypoints(modalities, active_kpt_names) -> int:
+    """Keypoint count to serialize a dataset with, matching what the parser uses
+    on reload.
+
+    Pose datasets (keypoints modality enabled) pad bbox+mask lines to K keypoint
+    slots so the line stays the unambiguous combined layout. Seg/detect datasets
+    (no keypoints) use 0 — a bare `class bbox <polygon>` line, which the parser
+    reads correctly via its combined K=0 path.
+    """
+    from profannotate.core.annotation.models import Modality
+
+    if Modality.KEYPOINTS not in modalities:
+        return 0
+    return len(active_kpt_names) if active_kpt_names else NUM_KEYPOINTS
 
 
 def label_path_for_image(root: Path, image_path: Path) -> Path:
@@ -142,11 +159,11 @@ def materialize_empty_labels(root: Path) -> int:
     return created
 
 
-def write_label_file(annotations: ImageAnnotations) -> bool:
+def write_label_file(annotations: ImageAnnotations, num_keypoints: int = NUM_KEYPOINTS) -> bool:
     label_path = Path(annotations.label_path)
     try:
         label_path.parent.mkdir(parents=True, exist_ok=True)
-        lines = [_serialize(inst) for inst in annotations.instances]
+        lines = [_serialize(inst, num_keypoints) for inst in annotations.instances]
         fd, tmp = tempfile.mkstemp(dir=label_path.parent, prefix=".profannotate_", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as fh:
@@ -166,7 +183,7 @@ def write_label_file(annotations: ImageAnnotations) -> bool:
         return False
 
 
-def _serialize(ann: Annotation) -> str:
+def _serialize(ann: Annotation, num_keypoints: int = NUM_KEYPOINTS) -> str:
     parts: list[str] = [str(ann.class_id)]
 
     bbox = ann.bbox
@@ -175,6 +192,11 @@ def _serialize(ann: Annotation) -> str:
         # synthesize a tight one so the keypoints survive the round-trip
         # instead of being silently dropped on the next parse.
         bbox = BBox.from_keypoints(ann.keypoints)
+    if bbox is None and ann.has_mask():
+        # Invariant: a mask always has a bbox. A bare `class <polygon>` line is
+        # ambiguous with a `class bbox <polygon>` line, so never emit one —
+        # derive the box from the polygon's extent when it is missing.
+        bbox = BBox.from_polygon(ann.mask.points)
 
     if bbox is not None:
         parts += [_f(bbox.cx), _f(bbox.cy), _f(bbox.w), _f(bbox.h)]
@@ -185,6 +207,13 @@ def _serialize(ann: Annotation) -> str:
                 parts += ["0", "0", "0"]
             else:
                 parts += [_f(kp.x), _f(kp.y), str(kp.visibility)]
+    elif ann.has_mask() and bbox is not None and num_keypoints > 0:
+        # bbox + mask with NO keypoints: pad the K empty keypoint slots so the
+        # line is `class bbox <K kpts> <polygon>` (the unambiguous combined
+        # layout). Without them, `class bbox <polygon>` is indistinguishable
+        # from a bare polygon, and the parser mis-reads the 4 bbox numbers as
+        # two phantom polygon vertices (dropping the bbox) on the next reload.
+        parts += ["0", "0", "0"] * num_keypoints
 
     if ann.has_mask():
         for x, y in ann.mask.points:

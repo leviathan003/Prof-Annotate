@@ -290,14 +290,18 @@ class _DatasetWorker(QObject):
             self.log_line.emit("Auto-annotation complete...", "done")
 
         self.log_line.emit("Generating data.yaml and finalising...", "active")
-        generate_yaml(dest)
-
-        # Write kpt config if a subset was selected
-        if self._selected_kpt_names is not None:
-            data = load_yaml(dest)
-            data["kpt_shape"] = [len(self._selected_kpt_names), 3]
-            data["keypoint_names"] = self._selected_kpt_names
-            save_yaml(dest, data)
+        if Modality.KEYPOINTS not in self._modalities:
+            # Keypoint-free dataset (bbox-only / bbox+seg) — declare it honestly as
+            # num_keypoints=0 so its labels never get phantom keypoint padding.
+            generate_yaml(dest, num_keypoints=0)
+        else:
+            generate_yaml(dest)
+            # Preserve the exact selected keypoint subset (names, not just count).
+            if self._selected_kpt_names is not None:
+                data = load_yaml(dest)
+                data["kpt_shape"] = [len(self._selected_kpt_names), 3]
+                data["keypoint_names"] = self._selected_kpt_names
+                save_yaml(dest, data)
 
         self.log_line.emit("All done. Dataset is clean and ready to load, Annotator.", "done")
         self.finished.emit(True, str(dest))
@@ -345,7 +349,11 @@ class _DatasetWorker(QObject):
 
     def _annotate_loop(self, engine, dest: Path) -> None:
         from profannotate.core.annotation.models import ImageAnnotations, Modality
-        from profannotate.core.annotation.writer import label_path_for_image, write_label_file
+        from profannotate.core.annotation.writer import (
+            dataset_num_keypoints,
+            label_path_for_image,
+            write_label_file,
+        )
         from profannotate.core.inference.filter import filter_by_modality
         from profannotate.core.inference.postprocess import postprocess
         from profannotate.utils.image import load_image_rgb
@@ -378,7 +386,9 @@ class _DatasetWorker(QObject):
                 label_path=str(lbl_path),
                 instances=filtered,
             )
-            write_label_file(img_ann)
+            write_label_file(
+                img_ann, dataset_num_keypoints(self._modalities, self._selected_kpt_names)
+            )
 
 
 # ── Base page ─────────────────────────────────────────────────────────────────
@@ -540,19 +550,25 @@ class _ModalityPage(_Page):
         self._layout.addWidget(
             self._body(
                 "Which annotation modalities shall this dataset include, Annotator?\n\n"
-                "Select one or more — your choice shapes every step that follows."
+                "A bounding box anchors every annotation, so it is always included. "
+                "Choose keypoints, a segmentation mask, or both to go with it."
             )
         )
         self._checks: dict[Modality, QCheckBox] = {}
         specs = [
-            (Modality.BBOX, "> Bounding Box", "#00CFFF"),
-            (Modality.KEYPOINTS, "> Keypoints", "#FFD700"),
-            (Modality.SEGMENTATION, "> Segmentation Mask", "#CC44FF"),
+            # BBox is compulsory — keypoints and masks only ever exist alongside a
+            # box, so it is checked and locked (cannot be unselected).
+            (Modality.BBOX, "> Bounding Box (required)", "#00CFFF", True),
+            (Modality.KEYPOINTS, "> Keypoints", "#FFD700", False),
+            (Modality.SEGMENTATION, "> Segmentation Mask", "#CC44FF", False),
         ]
-        for mod, label, color in specs:
+        for mod, label, color, locked in specs:
             cb = QCheckBox(label)
             cb.setChecked(True)
             cb.setStyleSheet(f"color: {color};")
+            if locked:
+                cb.setEnabled(False)  # stays checked; user cannot deselect it
+                cb.setToolTip("A bounding box is required for every dataset.")
             self._layout.addWidget(cb)
             self._checks[mod] = cb
 
@@ -570,9 +586,7 @@ class _ModalityPage(_Page):
 
     def _on_ok(self) -> None:
         selected = {m for m, cb in self._checks.items() if cb.isChecked()}
-        if not selected:
-            self._err.setText("At least one modality must be selected, Annotator.")
-            return
+        selected.add(Modality.BBOX)  # compulsory — never omit it
         self._err.setText("")
         self.proceeded.emit(selected)
 

@@ -89,12 +89,18 @@ def save_yaml(root: str | Path, data: dict[str, Any]) -> bool:
         return False
 
 
-def generate_yaml(root: str | Path, class_names: list[str] | None = None) -> dict[str, Any]:
+def generate_yaml(
+    root: str | Path,
+    class_names: list[str] | None = None,
+    num_keypoints: int | None = None,
+) -> dict[str, Any]:
     """
     Auto-generate a data.yaml for a dataset root.
     Detects class count from existing label files if class_names not provided.
-    Always writes kpt_shape + keypoint_names — inferred from label files when possible,
-    otherwise defaults to the full skeleton.
+
+    `num_keypoints` is authoritative when given (0 = a genuinely keypoint-free
+    dataset → `kpt_shape: [0, 3]`, empty keypoint_names). When None, the count is
+    inferred from label files, falling back to the full skeleton (legacy behavior).
     """
     from profannotate.config.skeleton import get_active_schema
 
@@ -111,20 +117,39 @@ def generate_yaml(root: str | Path, class_names: list[str] | None = None) -> dic
         data["names"] = detected if detected else ["object"]
 
     default_names = get_active_schema().names_in_order()
-    detected_kpts = _detect_num_keypoints(root)
-    if detected_kpts is not None and detected_kpts != len(default_names):
-        kpt_names = [f"kpt_{i}" for i in range(detected_kpts)]
+    kpt_names: list[str] | None
+    if num_keypoints is not None:
+        # Caller knows the dataset's modalities — honor it exactly, incl. 0.
+        if num_keypoints == 0:
+            kpt_names = []
+        elif num_keypoints <= len(default_names):
+            kpt_names = default_names[:num_keypoints]
+        else:
+            kpt_names = [f"kpt_{i}" for i in range(num_keypoints)]
     else:
-        kpt_names = default_names
-    data["kpt_shape"] = [len(kpt_names), 3]
-    data["keypoint_names"] = kpt_names
+        count, confident = resolve_keypoint_count(root)
+        if confident:
+            # Recoverable from labels (pure pose N, or 0 for a detection dataset).
+            kpt_names = (
+                default_names[:count]
+                if count <= len(default_names)
+                else [f"kpt_{i}" for i in range(count)]
+            )
+        else:
+            # Ambiguous (masks present, N unrecoverable) — leave kpt config OUT so
+            # the loader can ask the annotator once and persist the answer.
+            kpt_names = None
+
+    if kpt_names is not None:
+        data["kpt_shape"] = [len(kpt_names), 3]
+        data["keypoint_names"] = kpt_names
 
     save_yaml(root, data)
     logger.info(
-        "Generated data.yaml at %s with %d classes, %d keypoints",
+        "Generated data.yaml at %s with %d classes, %s keypoints",
         root,
         data["nc"],
-        len(kpt_names),
+        len(kpt_names) if kpt_names is not None else "unresolved (will prompt)",
     )
     return data
 
@@ -158,6 +183,63 @@ def _detect_num_keypoints(root: Path) -> int | None:
         except OSError:
             continue
     return next(iter(candidates), None) if len(candidates) == 1 else None
+
+
+def resolve_keypoint_count(root: str | Path, sample_limit: int = 5000) -> tuple[int | None, bool]:
+    """Resolve a dataset's keypoint count from its label geometry.
+
+    Returns ``(count, confident)``:
+      * A pure-pose / detection dataset is recoverable — every content line is
+        ``class + 4 bbox`` (F==4) or ``class + 4 + 3N`` (a single N), so the
+        residual ``F-4`` values are all multiples of 3 sharing one nonzero value.
+        → ``(0, True)`` for all-bbox, ``(N, True)`` for pure pose.
+      * Anything with masks present (varied even-offset field counts) makes N
+        mathematically unrecoverable — ``class bbox <3N kpts> <2S seg>`` and a
+        keypoint-free ``class bbox <2S seg>`` are indistinguishable by count.
+        → ``(None, False)`` — the caller must ask the annotator.
+
+    Sample-capped so it stays fast on million-image datasets.
+    """
+    from profannotate.config.constants import YOLO_LABEL_EXT, YOLO_LABELS_SUBDIR
+
+    root = Path(root)
+    lbl_dir = root / YOLO_LABELS_SUBDIR
+    if not lbl_dir.exists():
+        return (None, False)
+
+    seen_content = False
+    residuals: set[int] = set()
+    scanned = 0
+    for lbl in lbl_dir.rglob(f"*{YOLO_LABEL_EXT}"):
+        if scanned >= sample_limit:
+            break
+        try:
+            with lbl.open("r", encoding="utf-8", errors="ignore") as fh:
+                for line in fh:
+                    parts = line.split()
+                    if len(parts) < 2:
+                        continue
+                    scanned += 1
+                    seen_content = True
+                    f = len(parts) - 1  # fields after class_id
+                    if f > 4:
+                        residuals.add(f - 4)
+                    if scanned >= sample_limit:
+                        break
+        except OSError:
+            continue
+
+    if not seen_content:
+        return (None, False)  # nothing to go on — ask
+    if not residuals:
+        return (0, True)  # every line is bbox-only → detection dataset
+    # Pure pose: all residuals are the same positive multiple of 3.
+    if len(residuals) == 1:
+        (r,) = tuple(residuals)
+        if r > 0 and r % 3 == 0:
+            return (r // 3, True)
+    # Masks present (varied/non-pose residuals) — N is not recoverable from counts.
+    return (None, False)
 
 
 def _detect_classes(root: Path) -> list[str]:

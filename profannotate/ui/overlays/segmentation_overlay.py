@@ -33,22 +33,15 @@ class SegmentationOverlay(QGraphicsItem):
         self._is_drawing = is_drawing
         self._selected_pt: int | None = None
         self.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-        self._bounds = self._compute_bounds()
-
-    def _compute_bounds(self) -> QRectF:
-        if not self._mask.points:
-            return QRectF(0, 0, self._img_w, self._img_h)
-        xs = [x * self._img_w for x, _ in self._mask.points]
-        ys = [y * self._img_h for _, y in self._mask.points]
-        m = _SELECTED_RADIUS + 3
-        return QRectF(
-            min(xs) - m, min(ys) - m, max(xs) - min(xs) + m * 2, max(ys) - min(ys) + m * 2
-        )
 
     def boundingRect(self) -> QRectF:
-        # Qt calls this constantly (scene indexing, repaints) — must be O(1);
-        # recomputed only in update_mask under prepareGeometryChange.
-        return self._bounds
+        # Full image rect, not a tight box around the polygon. Vertex dots are
+        # painted in DEVICE space (resetTransform), but Qt derives the expose
+        # region from boundingRect in SCENE space — a tight box maps to too few
+        # device px at fit-scale < 1, so a partial update() clips the dots away
+        # until a full repaint. Covering the whole image keeps the marks inside
+        # the exposed region every time (matches DiffOverlay's approach).
+        return QRectF(0, 0, self._img_w, self._img_h)
 
     def paint(self, painter, option, widget=None):
         if not self._mask.points:
@@ -101,9 +94,7 @@ class SegmentationOverlay(QGraphicsItem):
             painter.restore()
 
     def update_mask(self, mask: SegmentationMask) -> None:
-        self.prepareGeometryChange()
         self._mask = mask
-        self._bounds = self._compute_bounds()
         self.update()
 
     def select_point(self, idx: int | None) -> None:
