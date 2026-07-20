@@ -15,7 +15,7 @@ else:
     _PACKAGE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 APP_NAME = "Prof Annotate"
-APP_VERSION = "1.0.11"
+APP_VERSION = "1.0.12"
 APP_DOCS_URL = "https://profannotate.readthedocs.io"
 
 ASSETS_DIR = _PACKAGE_ROOT / "assets"
