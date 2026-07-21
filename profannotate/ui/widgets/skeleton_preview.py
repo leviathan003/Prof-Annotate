@@ -12,7 +12,7 @@ schema's `connections` (drawn only when BOTH endpoints are selected).
 
 from __future__ import annotations
 
-from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtCore import QPointF, QRectF, Qt, Signal
 from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen
 from PySide6.QtWidgets import QWidget
 
@@ -33,11 +33,17 @@ _DIM_BONE = QColor(120, 120, 120, 70)
 
 
 class SkeletonPreview(QWidget):
-    """Paints the reference skeleton; `set_selected(names)` highlights a subset."""
+    """Clickable reference skeleton: click a dot to select/deselect that keypoint,
+    hover to see its name. `set_selected(names)` sets the subset programmatically."""
+
+    selectionChanged = Signal()  # emitted when a click toggles a keypoint
+
+    _HIT_RADIUS_PX = 10.0
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self.setMinimumSize(340, 380)
+        self.setMinimumSize(520, 460)
+        self.setMouseTracking(True)  # hover highlight without a pressed button
         self._schema = get_active_schema()
         self._pose = reference_pose(self._schema)
         self._selected: set[str] = set()
@@ -49,6 +55,10 @@ class SkeletonPreview(QWidget):
         self._selected = set(names)
         self.update()
 
+    def selected_names(self) -> list[str]:
+        """Selected names in canonical schema order."""
+        return [n for n in self._schema.names_in_order() if n in self._selected]
+
     def highlight(self, name: str | None) -> None:
         self._highlight = name
         self.update()
@@ -58,6 +68,38 @@ class SkeletonPreview(QWidget):
         self._schema = get_active_schema()
         self._pose = reference_pose(self._schema)
         self.update()
+
+    # ----- interaction -----
+
+    def _hit_test(self, pos: QPointF) -> str | None:
+        """Nearest dot within the click radius, else None."""
+        w, h, pad = self.width(), self.height(), 10
+        best, best_d2 = None, self._HIT_RADIUS_PX ** 2
+        for name, xy in self._pose.items():
+            c = self._to_px(xy, w, h, pad)
+            d2 = (c.x() - pos.x()) ** 2 + (c.y() - pos.y()) ** 2
+            if d2 <= best_d2:
+                best, best_d2 = name, d2
+        return best
+
+    def mousePressEvent(self, event) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
+        name = self._hit_test(event.position())
+        if name is None:
+            return
+        if name in self._selected:
+            self._selected.discard(name)
+        else:
+            self._selected.add(name)
+        self.update()
+        self.selectionChanged.emit()
+
+    def mouseMoveEvent(self, event) -> None:
+        name = self._hit_test(event.position())
+        self.setToolTip(name or "")
+        if name != self._highlight:
+            self.highlight(name)
 
     # ----- painting -----
 

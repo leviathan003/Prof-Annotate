@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "profannotate"
-version = "1.0.12"
+version = "1.0.13"
 description = "Terminal-style GUI annotation tool for YOLO training data"
 readme = "README.md"
 license = { file = "LICENSE" }

@@ -27,7 +27,6 @@ from PySide6.QtWidgets import (
 )
 
 from profannotate.config.skeleton import get_active_schema
-from profannotate.ui.widgets.kpt_group_selector import KeypointGroupSelector
 from profannotate.ui.widgets.skeleton_preview import SkeletonPreview
 
 
@@ -101,13 +100,27 @@ class KeypointSelectionPanel(QWidget):
         v = QVBoxLayout(page)
         v.setSpacing(10)
 
-        body = QHBoxLayout()
-        self._selector = KeypointGroupSelector(preselected=preselected, scroll_height=300)
-        self._selector.selectionChanged.connect(self._on_selection_changed)
-        body.addWidget(self._selector, 3)
+        hint = QLabel("Click a keypoint to select it; click it again to deselect. Hover to see its name.")
+        hint.setObjectName("dialog_body")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        v.addWidget(hint)
+
+        # Slim preset row — one button per schema group selects that whole group.
+        if self._schema.groups:
+            presets = QHBoxLayout()
+            presets.addWidget(QLabel("Presets:"))
+            for label, members in self._schema.groups.items():
+                btn = QPushButton(label)
+                btn.setObjectName("preset_button")
+                btn.clicked.connect(lambda _=False, m=list(members): self._apply_preset(m))
+                presets.addWidget(btn)
+            presets.addStretch(1)
+            v.addLayout(presets)
+
         self._preview = SkeletonPreview()
-        body.addWidget(self._preview, 2)
-        v.addLayout(body)
+        self._preview.set_selected(preselected or self._schema.names_in_order())
+        self._preview.selectionChanged.connect(self._on_selection_changed)
+        v.addWidget(self._preview, 1)
 
         self._counter = QLabel("")
         self._counter.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -129,17 +142,22 @@ class KeypointSelectionPanel(QWidget):
 
     # ── Flow ──────────────────────────────────────────────────────────────────────
 
+    def _apply_preset(self, members: list[str]) -> None:
+        # set_selected doesn't emit, so refresh the counter/proceed state here.
+        self._preview.set_selected(members)
+        self._on_selection_changed()
+
     def _on_continue(self) -> None:
         self._N = self._spin.value()
         # For a fresh subset (no explicit preselection), start the picker empty so
-        # the annotator builds up to exactly N instead of unchecking the full set.
+        # the annotator builds up to exactly N instead of unclicking the full set.
         if self._preselected is None and self._N < self._schema.count:
-            self._selector.set_selected([])
+            self._preview.set_selected([])
         self._stack.setCurrentIndex(1)
         self._on_selection_changed()
 
     def _on_selection_changed(self) -> None:
-        sel = self._selector.selected_names()
+        sel = self._preview.selected_names()
         self._preview.set_selected(sel)
         matched = len(sel) == self._N
         self._counter.setText(f"Selected {len(sel)} / {self._N}")
@@ -150,7 +168,7 @@ class KeypointSelectionPanel(QWidget):
         self._proceed.setEnabled(matched)
 
     def _on_proceed(self) -> None:
-        sel = self._selector.selected_names()
+        sel = self._preview.selected_names()
         if len(sel) != self._N:
             return
         # Selecting the full schema is equivalent to "use all".
