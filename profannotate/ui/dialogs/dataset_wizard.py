@@ -603,10 +603,10 @@ class _KptSelectionPage(_Page):
         self._layout.addWidget(self._title("Select Keypoints to Annotate"))
         self._layout.addWidget(
             self._body(
-                "Declare how many keypoints you'll annotate, then choose exactly "
-                "those, Annotator. The diagram shows which keypoints you've picked "
-                "and where they sit on the body. The choice is recorded in data.yaml "
-                "and drives the drawing sequence and skeleton connections."
+                "Click the keypoints you'll annotate on the diagram, Annotator "
+                "(or use the presets). The diagram shows which keypoints you've "
+                "picked and where they sit on the body. The choice is recorded in "
+                "data.yaml and drives the drawing sequence and skeleton connections."
             )
         )
 

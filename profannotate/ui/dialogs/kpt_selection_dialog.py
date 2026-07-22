@@ -3,8 +3,8 @@ profannotate/ui/dialogs/kpt_selection_dialog.py
 Standalone modal that asks which keypoints should be active for a dataset.
 Used when opening an images-only dataset that has no recorded kpt config yet.
 
-Wraps the shared two-step `KeypointSelectionPanel` (declare count → pick exactly
-that many, with a live skeleton diagram). `selected_names()` returns the chosen
+Wraps the shared click-to-choose `KeypointSelectionPanel` (pick any number of
+keypoints on a live skeleton diagram). `selected_names()` returns the chosen
 list in canonical order, or None if cancelled.
 """
 
@@ -54,8 +54,8 @@ class KptSelectionDialog(QDialog):
 
         body = QLabel(
             "This dataset has no recorded keypoint configuration yet, Annotator. "
-            "Declare how many keypoints you'll annotate, then choose exactly those "
-            "— the choice is written to data.yaml and used everywhere from "
+            "Click the keypoints you'll annotate on the diagram below (or use the "
+            "presets) — the choice is written to data.yaml and used everywhere from "
             "auto-annotation to the skeleton overlay."
         )
         body.setObjectName("dialog_body")
